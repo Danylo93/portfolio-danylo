@@ -10,7 +10,7 @@ const commands = [
   "$ cat skills.txt",
   "> CI/CD • Kubernetes • Terraform • AWS • Docker • ArgoCD",
   "$ uptime",
-  "> 4+ anos de experiência em infraestrutura e DevOps",
+  "> 5+ anos de experiência em infraestrutura e DevOps",
 ];
 
 const TypingText = ({ text, delay }: { text: string; delay: number }) => {
