@@ -1,160 +1,117 @@
 import { motion } from "framer-motion";
 import { useEffect, useState } from "react";
-import { Terminal, ChevronRight, Download } from "lucide-react";
+import { Terminal, ChevronRight, ExternalLink } from "lucide-react";
 
-const commands = [
+const lines = [
   "$ whoami",
-  "> Danylo Alves de Oliveira — São Paulo, BR",
-  "$ cat role.txt",
-  "> Senior Infrastructure Engineer | DevOps/SRE",
-  "$ kubectl get nodes --all-namespaces",
-  "> eks-prod-node-01   Ready   <5+ years>",
-  "$ terraform --version",
-  "> AWS · Azure · GCP · EKS · Ansible · ArgoCD",
-  "$ echo $SLO",
-  "> 99.9% · incident response · post-mortem",
+  "> Danylo Alves de Oliveira — SRE / Senior Infrastructure Engineer",
+  "$ cat slo-status.json | jq '.availability'",
+  "> 99.94%  ✓ within error budget",
+  "$ kubectl top nodes",
+  "> eks-prod-node-01   CPU 42%   MEM 61%   READY",
+  "$ curl -s /metrics | grep slo_burn_rate",
+  "> slo_burn_rate{env=\"prod\"} 0.31  — nominal",
+  "$ uptime --sre",
+  "> 5+ anos · incident response · post-mortem · SLI/SLO/SLA",
 ];
 
 const TypingText = ({ text, delay }: { text: string; delay: number }) => {
   const [displayed, setDisplayed] = useState("");
   const [done, setDone] = useState(false);
-
   useEffect(() => {
-    const timeout = setTimeout(() => {
+    const t = setTimeout(() => {
       let i = 0;
-      const speed = text.startsWith(">") ? 16 : 30;
-      const interval = setInterval(() => {
+      const speed = text.startsWith(">") ? 14 : 28;
+      const iv = setInterval(() => {
         setDisplayed(text.slice(0, i + 1));
         i++;
-        if (i >= text.length) {
-          clearInterval(interval);
-          setDone(true);
-        }
+        if (i >= text.length) { clearInterval(iv); setDone(true); }
       }, speed);
-      return () => clearInterval(interval);
+      return () => clearInterval(iv);
     }, delay);
-    return () => clearTimeout(timeout);
+    return () => clearTimeout(t);
   }, [text, delay]);
-
-  const isCommand = text.startsWith("$");
-  const isOutput = text.startsWith(">");
-
   return (
-    <span
-      className={
-        isOutput
-          ? "text-primary"
-          : isCommand
-          ? "text-accent"
-          : "text-foreground"
-      }
-    >
+    <span className={text.startsWith(">") ? "text-primary" : text.startsWith("$") ? "text-accent" : "text-foreground"}>
       {displayed}
       {!done && <span className="terminal-cursor text-primary">▊</span>}
     </span>
   );
 };
 
-const HeroSection = () => {
-  return (
-    <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
-      <div className="absolute inset-0 grid-bg opacity-40" />
-      <div className="absolute inset-0 scanline" />
+const StatusBadge = ({ label, value, color }: { label: string; value: string; color: string }) => (
+  <div className="flex flex-col items-center p-3 rounded-lg border bg-card/60" style={{ borderColor: `${color}25` }}>
+    <span className="text-lg font-display font-bold" style={{ color }}>{value}</span>
+    <span className="text-[10px] font-mono text-muted-foreground mt-0.5">{label}</span>
+  </div>
+);
 
-      {/* Floating blobs */}
-      <motion.div
-        className="absolute top-1/4 left-1/4 w-72 h-72 rounded-full bg-primary/5 blur-3xl"
-        animate={{ x: [0, 40, 0], y: [0, -25, 0] }}
-        transition={{ duration: 9, repeat: Infinity, ease: "easeInOut" }}
-      />
-      <motion.div
-        className="absolute bottom-1/3 right-1/4 w-96 h-96 rounded-full bg-accent/5 blur-3xl"
-        animate={{ x: [0, -50, 0], y: [0, 35, 0] }}
-        transition={{ duration: 11, repeat: Infinity, ease: "easeInOut" }}
-      />
-      <motion.div
-        className="absolute top-1/2 right-1/3 w-48 h-48 rounded-full blur-3xl"
-        style={{ backgroundColor: "#FF990008" }}
-        animate={{ x: [0, 25, 0], y: [0, -20, 0] }}
-        transition={{ duration: 7, repeat: Infinity, ease: "easeInOut" }}
-      />
-
-      <div className="container relative z-10 px-6">
-        <motion.div
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8 }}
-          className="max-w-3xl mx-auto"
-        >
-          {/* Terminal window */}
-          <div className="rounded-xl border border-border bg-card/80 backdrop-blur-sm overflow-hidden box-glow">
-            {/* Title bar */}
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-border bg-secondary/60">
-              <div className="w-3 h-3 rounded-full bg-destructive/70" />
-              <div className="w-3 h-3 rounded-full bg-yellow-500/50" />
-              <div className="w-3 h-3 rounded-full bg-primary/70" />
-              <span className="ml-2 text-xs font-mono text-muted-foreground flex items-center gap-1.5">
-                <Terminal size={11} />
-                danylo@devops:~/infrastructure
-              </span>
-              <div className="ml-auto flex items-center gap-1.5">
-                <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-                <span className="text-[10px] font-mono text-green-400/80">ONLINE</span>
-              </div>
-            </div>
-
-            {/* Terminal body */}
-            <div className="p-5 font-mono text-sm leading-loose space-y-0.5">
-              {commands.map((cmd, i) => (
-                <div key={i}>
-                  <TypingText text={cmd} delay={i * 1200} />
-                </div>
-              ))}
+const HeroSection = () => (
+  <section className="relative min-h-screen flex items-center justify-center overflow-hidden">
+    <div className="absolute inset-0 grid-bg opacity-40" />
+    <div className="absolute inset-0 scanline" />
+    <motion.div className="absolute top-1/4 left-1/4 w-80 h-80 rounded-full blur-3xl"
+      style={{ backgroundColor: "hsl(38 92% 50% / 0.05)" }}
+      animate={{ x: [0, 35, 0], y: [0, -20, 0] }}
+      transition={{ duration: 9, repeat: Infinity, ease: "easeInOut" }} />
+    <motion.div className="absolute bottom-1/4 right-1/4 w-96 h-96 rounded-full blur-3xl"
+      style={{ backgroundColor: "hsl(217 91% 60% / 0.05)" }}
+      animate={{ x: [0, -40, 0], y: [0, 30, 0] }}
+      transition={{ duration: 12, repeat: Infinity, ease: "easeInOut" }} />
+    <div className="container relative z-10 px-6">
+      <motion.div initial={{ opacity: 0, y: 30 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.8 }}
+        className="max-w-3xl mx-auto">
+        <div className="rounded-xl border border-border bg-card/80 backdrop-blur-sm overflow-hidden box-glow">
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-border bg-secondary/60">
+            <div className="w-3 h-3 rounded-full bg-destructive/70" />
+            <div className="w-3 h-3 rounded-full bg-primary/50" />
+            <div className="w-3 h-3 rounded-full bg-green-500/70" />
+            <span className="ml-2 text-xs font-mono text-muted-foreground flex items-center gap-1.5">
+              <Terminal size={11} /> sre@prod-cluster:~
+            </span>
+            <div className="ml-auto flex items-center gap-1.5">
+              <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+              <span className="text-[10px] font-mono text-green-400/80">SLO HEALTHY</span>
             </div>
           </div>
-
-          {/* Hero text */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 11, duration: 1 }}
-            className="mt-10 text-center"
-          >
-            <h1 className="text-4xl md:text-6xl font-display font-bold mb-3">
-              <span className="gradient-text">Danylo</span>{" "}
-              <span className="text-foreground">Oliveira</span>
-            </h1>
-            <p className="text-muted-foreground text-base md:text-lg mb-2">
-              Senior Infrastructure Engineer · DevOps/SRE
-            </p>
-            <p className="text-muted-foreground/60 text-sm font-mono mb-8">
-              Automatizando o futuro, um pipeline por vez.
-            </p>
-            <div className="flex items-center justify-center gap-4 flex-wrap">
-              <motion.a
-                href="#about"
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                className="inline-flex items-center gap-2 px-6 py-3 rounded-lg bg-primary text-primary-foreground font-medium transition-all box-glow"
-              >
-                Explorar <ChevronRight size={16} />
-              </motion.a>
-              <motion.a
-                href="https://www.linkedin.com/in/danylo-oliveira-ti/"
-                target="_blank"
-                rel="noopener noreferrer"
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                className="inline-flex items-center gap-2 px-6 py-3 rounded-lg border border-border bg-card/50 text-foreground font-medium transition-all hover:border-glow"
-              >
-                <Download size={16} className="text-primary" /> LinkedIn
-              </motion.a>
-            </div>
-          </motion.div>
+          <div className="p-5 font-mono text-sm leading-loose space-y-0.5">
+            {lines.map((l, i) => <div key={i}><TypingText text={l} delay={i * 1150} /></div>)}
+          </div>
+        </div>
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 10, duration: 0.8 }}
+          className="mt-6 grid grid-cols-4 gap-3">
+          <StatusBadge label="Availability" value="99.9%" color="#22c55e" />
+          <StatusBadge label="MTTR" value="11min" color="#f59e0b" />
+          <StatusBadge label="Error Budget" value="68%" color="#3b82f6" />
+          <StatusBadge label="Incidents/mo" value="2" color="#a78bfa" />
         </motion.div>
-      </div>
-    </section>
-  );
-};
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 11, duration: 1 }}
+          className="mt-8 text-center">
+          <h1 className="text-4xl md:text-6xl font-display font-bold mb-3">
+            <span className="gradient-text">Danylo</span>{" "}
+            <span className="text-foreground">Oliveira</span>
+          </h1>
+          <p className="text-muted-foreground text-base md:text-lg mb-1">
+            Site Reliability Engineer · Senior Infrastructure Engineer
+          </p>
+          <p className="text-muted-foreground/60 text-sm font-mono mb-8">
+            Reliability is a feature. Uptime is a commitment.
+          </p>
+          <div className="flex items-center justify-center gap-4 flex-wrap">
+            <motion.a href="#slo" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-lg bg-primary text-primary-foreground font-medium box-glow">
+              Ver SLOs <ChevronRight size={16} />
+            </motion.a>
+            <motion.a href="https://www.linkedin.com/in/danylo-oliveira-ti/" target="_blank" rel="noopener noreferrer"
+              whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-lg border border-border bg-card/50 text-foreground font-medium hover:border-glow transition-all">
+              <ExternalLink size={15} className="text-primary" /> LinkedIn
+            </motion.a>
+          </div>
+        </motion.div>
+      </motion.div>
+    </div>
+  </section>
+);
 
 export default HeroSection;

@@ -6,114 +6,69 @@
 
 @layer base {
   :root {
-    --background: 220 20% 7%;
-    --foreground: 155 10% 85%;
-
-    --card: 220 18% 10%;
-    --card-foreground: 155 10% 85%;
-
-    --popover: 220 18% 10%;
-    --popover-foreground: 155 10% 85%;
-
-    --primary: 155 80% 50%;
-    --primary-foreground: 220 20% 7%;
-
-    --secondary: 220 15% 15%;
-    --secondary-foreground: 155 10% 85%;
-
-    --muted: 220 15% 13%;
-    --muted-foreground: 220 10% 50%;
-
-    --accent: 185 70% 45%;
-    --accent-foreground: 220 20% 7%;
-
-    --destructive: 0 70% 50%;
+    --background: 222 35% 5%;
+    --foreground: 215 20% 88%;
+    --card: 222 30% 8%;
+    --card-foreground: 215 20% 88%;
+    --popover: 222 30% 8%;
+    --popover-foreground: 215 20% 88%;
+    --primary: 38 92% 50%;
+    --primary-foreground: 222 35% 5%;
+    --secondary: 222 25% 12%;
+    --secondary-foreground: 215 20% 88%;
+    --muted: 222 25% 10%;
+    --muted-foreground: 220 15% 45%;
+    --accent: 217 91% 60%;
+    --accent-foreground: 222 35% 5%;
+    --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 98%;
-
-    --border: 220 15% 18%;
-    --input: 220 15% 18%;
-    --ring: 155 80% 50%;
-
+    --border: 222 20% 14%;
+    --input: 222 20% 14%;
+    --ring: 38 92% 50%;
     --radius: 0.5rem;
-
-    --glow-primary: 155 80% 50%;
-    --glow-accent: 185 70% 45%;
-
-    --sidebar-background: 220 18% 10%;
-    --sidebar-foreground: 155 10% 85%;
-    --sidebar-primary: 155 80% 50%;
-    --sidebar-primary-foreground: 220 20% 7%;
-    --sidebar-accent: 220 15% 15%;
-    --sidebar-accent-foreground: 155 10% 85%;
-    --sidebar-border: 220 15% 18%;
-    --sidebar-ring: 155 80% 50%;
+    --sidebar-background: 222 30% 8%;
+    --sidebar-foreground: 215 20% 88%;
+    --sidebar-primary: 38 92% 50%;
+    --sidebar-primary-foreground: 222 35% 5%;
+    --sidebar-accent: 222 25% 12%;
+    --sidebar-accent-foreground: 215 20% 88%;
+    --sidebar-border: 222 20% 14%;
+    --sidebar-ring: 38 92% 50%;
   }
 }
 
 @layer base {
-  * {
-    @apply border-border;
-  }
-
-  body {
-    @apply bg-background text-foreground font-body antialiased;
-  }
+  * { @apply border-border; }
+  body { @apply bg-background text-foreground font-body antialiased; }
 }
 
 @layer utilities {
-  .text-glow {
-    text-shadow: 0 0 20px hsl(155 80% 50% / 0.5), 0 0 40px hsl(155 80% 50% / 0.2);
-  }
-
-  .box-glow {
-    box-shadow: 0 0 15px hsl(155 80% 50% / 0.15), 0 0 30px hsl(155 80% 50% / 0.05);
-  }
-
-  .border-glow {
-    border-color: hsl(155 80% 50% / 0.3);
-  }
-
+  .text-glow { text-shadow: 0 0 20px hsl(38 92% 50% / 0.5), 0 0 40px hsl(38 92% 50% / 0.2); }
+  .box-glow { box-shadow: 0 0 15px hsl(38 92% 50% / 0.12), 0 0 30px hsl(38 92% 50% / 0.05); }
+  .border-glow { border-color: hsl(38 92% 50% / 0.35); }
   .gradient-text {
     @apply bg-clip-text text-transparent;
-    background-image: linear-gradient(135deg, hsl(155 80% 50%), hsl(185 70% 45%));
+    background-image: linear-gradient(135deg, hsl(38 92% 50%), hsl(217 91% 60%));
   }
-
-  .terminal-cursor {
-    animation: blink 1s step-end infinite;
-  }
-
-  @keyframes blink {
-    50% { opacity: 0; }
-  }
-
+  .terminal-cursor { animation: blink 1s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
   .grid-bg {
-    background-image: 
-      linear-gradient(hsl(220 15% 18% / 0.5) 1px, transparent 1px),
-      linear-gradient(90deg, hsl(220 15% 18% / 0.5) 1px, transparent 1px);
+    background-image:
+      linear-gradient(hsl(222 20% 14% / 0.5) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(222 20% 14% / 0.5) 1px, transparent 1px);
     background-size: 60px 60px;
   }
-
   .scanline {
-    background: linear-gradient(
-      transparent 50%,
-      hsl(155 80% 50% / 0.02) 50%
-    );
+    background: linear-gradient(transparent 50%, hsl(38 92% 50% / 0.015) 50%);
     background-size: 100% 4px;
     pointer-events: none;
   }
-
-  .aws-glow {
-    box-shadow: 0 0 20px rgba(255,153,0,0.15), 0 0 40px rgba(255,153,0,0.05);
+  @keyframes pulse-ring {
+    0%   { box-shadow: 0 0 0 0    hsl(38 92% 50% / 0.4); }
+    70%  { box-shadow: 0 0 0 10px hsl(38 92% 50% / 0); }
+    100% { box-shadow: 0 0 0 0    hsl(38 92% 50% / 0); }
   }
-
-  @keyframes flow-x {
-    0%   { transform: translateX(-100%); opacity: 0; }
-    10%  { opacity: 1; }
-    90%  { opacity: 1; }
-    100% { transform: translateX(100%); opacity: 0; }
-  }
-
-  .flow-particle {
-    animation: flow-x 2s linear infinite;
-  }
+  .pulse-ring { animation: pulse-ring 2s ease infinite; }
+  @keyframes pulse-glow { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+  .animate-pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
 }
