@@ -515,3 +515,4 @@ export const labs: Lab[] = [
     outro: "Rollback em segundos. Em produção, combine isso com canary + análise automática (Argo Rollouts).",
   },
 ];
+export { lessons } from "./kubernetes-lessons";

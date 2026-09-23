@@ -53,3 +53,15 @@ export const markCompleted = (id: string) => {
   const done = loadProgress();
   if (!done.includes(id)) saveProgress([...done, id]);
 };
+
+// ---------- navigation ----------
+export const itemUrl = (x: { kind: "lesson" | "lab"; item: { id: string } }) => (x.kind === "lesson" ? `/labs/learn/${x.item.id}` : `/labs/${x.item.id}`);
+
+/** The item after `id` in its track's learning path (then the next track). */
+export const nextInPath = (id: string) => {
+  const all = TRACKS.flatMap((t) => pathOf(t.id));
+  const i = all.findIndex((x) => x.item.id === id);
+  return i >= 0 ? all[i + 1] : undefined;
+};
+
+export const lessonKey = (id: string) => `lesson:${id}`;

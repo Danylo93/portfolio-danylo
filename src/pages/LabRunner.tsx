@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft, Bot, Brain, Check, ChevronLeft, ChevronRight, Copy, HelpCircle, Info, Lightbulb, ListChecks, RotateCcw, Timer, X,
 } from "lucide-react";
-import { LABS, markCompleted } from "@/labs/data";
+import { LABS, itemUrl, markCompleted, nextInPath } from "@/labs/data";
 import { Shell } from "@/labs/shell";
 import { diagnose, explainCommand, react, type CoachMsg } from "@/labs/coach";
 import Terminal, { type TerminalHandle } from "@/labs/Terminal";
@@ -81,8 +81,7 @@ const LabRunner = () => {
 
   if (!lab || !shell) return <NotFound />;
 
-  const idx = LABS.indexOf(lab);
-  const next = LABS[idx + 1];
+  const next = nextInPath(lab.id);
   const finished = step >= lab.steps.length;
   const current = step >= 0 && !finished ? lab.steps[step] : null;
   const progress = finished ? 100 : (passed.length / lab.steps.length) * 100;
@@ -437,10 +436,10 @@ const LabRunner = () => {
                         </button>
                         {next ? (
                           <button
-                            onClick={() => navigate(`/labs/${next.id}`)}
+                            onClick={() => navigate(itemUrl(next))}
                             className="text-sm px-4 py-2 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-opacity"
                           >
-                            Próximo Laboratório
+                            {next.kind === "lesson" ? "Próxima Lição" : "Próximo Laboratório"}
                           </button>
                         ) : (
                           <Link to="/labs" className="text-sm px-4 py-2 rounded-md bg-primary text-primary-foreground hover:opacity-90">
@@ -448,7 +447,7 @@ const LabRunner = () => {
                           </Link>
                         )}
                       </div>
-                      {next && <p className="mt-3 text-[11px] text-muted-foreground">Próximo lab sugerido: {next.title}</p>}
+                      {next && <p className="mt-3 text-[11px] text-muted-foreground">Próximo sugerido: {next.item.title}</p>}
                     </div>
                   </div>
                 )}

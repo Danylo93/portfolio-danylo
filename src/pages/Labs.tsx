@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowLeft, Award, CheckCircle2, ChevronUp, Circle, Clock, FlaskConical, Lock, Puzzle, RotateCcw, Search, Terminal } from "lucide-react";
-import { ALL_SKILLS, LABS, TRACKS, loadProgress, saveProgress } from "@/labs/data";
+import { ArrowLeft, Award, BookOpen, CheckCircle2, ChevronUp, Circle, Clock, FlaskConical, Lock, Puzzle, RotateCcw, Search, Terminal } from "lucide-react";
+import { ALL_SKILLS, LABS, LESSONS, TRACKS, lessonKey, loadProgress, pathOf, saveProgress } from "@/labs/data";
 
 const LEVEL_COLOR: Record<string, string> = { Iniciante: "#4ade80", Intermediário: "#fbbf24", Avançado: "#f87171" };
 
@@ -23,8 +23,10 @@ const Labs = () => {
     () =>
       TRACKS.filter((t) => filter === "all" || t.id === filter).map((t) => ({
         track: t,
-        labs: LABS.filter((l) => l.track === t.id && (!q || l.title.toLowerCase().includes(q) || l.summary.toLowerCase().includes(q) || l.skills.some((s) => s.toLowerCase().includes(q)))),
-      })).filter((x) => x.labs.length),
+        items: pathOf(t.id).filter(
+          (x) => !q || x.item.title.toLowerCase().includes(q) || x.item.summary.toLowerCase().includes(q) || (x.kind === "lab" && x.item.skills.some((s) => s.toLowerCase().includes(q))),
+        ),
+      })).filter((x) => x.items.length),
     [filter, q],
   );
 
@@ -60,6 +62,7 @@ const Labs = () => {
           <div className="flex flex-wrap gap-2 mt-5">
             {[
               { v: LABS.length, k: "labs" },
+              { v: LESSONS.length, k: "lições" },
               { v: TRACKS.length, k: "trilhas" },
               { v: challenges, k: "desafios" },
               { v: ALL_SKILLS.length, k: "habilidades" },
@@ -110,8 +113,10 @@ const Labs = () => {
           {/* Tracks */}
           <div className="space-y-5 min-w-0">
             {!visible.length && <p className="text-sm text-muted-foreground">Nenhum lab encontrado para "{query}".</p>}
-            {visible.map(({ track: t, labs }, ti) => {
+            {visible.map(({ track: t, items }, ti) => {
               const all = LABS.filter((l) => l.track === t.id);
+              const lessons = LESSONS.filter((l) => l.track === t.id);
+              const lessonsDone = lessons.filter((l) => done.includes(lessonKey(l.id))).length;
               const count = all.filter((l) => done.includes(l.id)).length;
               const isOpen = open[t.id] || filter !== "all" || !!q;
               return (
@@ -150,13 +155,40 @@ const Labs = () => {
                     className="w-full flex items-center justify-between px-5 py-3 text-sm text-foreground hover:bg-muted/40 transition-colors"
                     aria-expanded={isOpen}
                   >
-                    <span>Concluído {count} de {all.length} Labs</span>
+                    <span>
+                      Concluído {count} de {all.length} Labs
+                      {lessons.length > 0 && <span className="text-muted-foreground"> · {lessonsDone} de {lessons.length} lições</span>}
+                    </span>
                     <ChevronUp size={16} className={`transition-transform ${isOpen ? "" : "rotate-180"}`} />
                   </button>
 
                   {isOpen && (
                     <ul>
-                      {labs.map((lab) => {
+                      {items.map((x) => {
+                        if (x.kind === "lesson") {
+                          const l = x.item;
+                          const isDone = done.includes(lessonKey(l.id));
+                          return (
+                            <li key={l.id} className="group border-t border-border bg-muted/10">
+                              <Link to={`/labs/learn/${l.id}`} className="flex items-center gap-3 px-5 py-3 hover:bg-muted/40 transition-colors">
+                                <BookOpen size={16} className="shrink-0" style={{ color: t.color }} />
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-sm text-foreground truncate">{l.title}</div>
+                                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-[10px] font-mono text-muted-foreground">
+                                    <span className="uppercase" style={{ color: t.color }}>lição</span>
+                                    <span className="flex items-center gap-1"><Clock size={10} /> {l.minutes} min</span>
+                                    <span>{l.quiz.length} questões</span>
+                                  </div>
+                                </div>
+                                <span className="hidden sm:group-hover:inline-flex text-xs font-mono px-3 py-1.5 rounded-md border border-border text-foreground whitespace-nowrap">
+                                  {isDone ? "Revisar" : "Ler lição"}
+                                </span>
+                                {isDone ? <CheckCircle2 size={18} className="shrink-0 text-green-400" /> : <Circle size={18} className="shrink-0 text-muted-foreground/60" />}
+                              </Link>
+                            </li>
+                          );
+                        }
+                        const lab = x.item;
                         const isDone = done.includes(lab.id);
                         const Icon = lab.kind === "challenge" ? Puzzle : FlaskConical;
                         return (

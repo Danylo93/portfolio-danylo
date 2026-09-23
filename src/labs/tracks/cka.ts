@@ -954,3 +954,4 @@ export const labs: Lab[] = [
     outro: "Service consertado. Endpoints vazios quase sempre são selector errado ou Pods não-Ready.",
   },
 ];
+export { lessons } from "./cka-lessons";
