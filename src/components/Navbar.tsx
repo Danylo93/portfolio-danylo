@@ -1,5 +1,6 @@
 import { motion } from "framer-motion";
-import { Terminal } from "lucide-react";
+import { FlaskConical, Terminal } from "lucide-react";
+import { Link } from "react-router-dom";
 
 const links = [
   { label: "Sobre", href: "#about" },
@@ -37,9 +38,18 @@ const Navbar = () => {
               {link.label}
             </a>
           ))}
+          <Link
+            to="/labs"
+            className="flex items-center gap-1.5 text-xs font-mono px-2.5 py-1 rounded-md border border-primary/40 text-primary hover:bg-primary/10 transition-colors"
+          >
+            <FlaskConical size={12} /> Labs
+          </Link>
         </div>
 
         <div className="flex items-center gap-2">
+          <Link to="/labs" className="md:hidden flex items-center gap-1 text-[10px] font-mono text-primary mr-2">
+            <FlaskConical size={12} /> Labs
+          </Link>
           <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
           <span className="text-[10px] font-mono text-green-400/70 hidden sm:block">open to work</span>
         </div>

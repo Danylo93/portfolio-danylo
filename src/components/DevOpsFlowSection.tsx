@@ -1,4 +1,5 @@
 import { motion } from "framer-motion";
+import type { LucideIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   GitBranch,
@@ -15,7 +16,7 @@ interface Stage {
   id: string;
   label: string;
   sublabel: string;
-  Icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>;
+  Icon: LucideIcon;
   tools: string[];
   color: string;
 }
