@@ -1,126 +1,77 @@
 // Mentor: explains commands, diagnoses mistakes and reacts to terminal output.
-import { COMMANDS, KUBECTL_SUBS, type Entry, type Shell } from "./shell";
-import type { Step } from "./data";
+import type { Entry, Shell } from "./shell";
+import type { Step } from "./types";
+import { getTool } from "./registry";
+import { closest } from "./util";
+import { RESOURCE_WORDS } from "./k8s/kubectl";
 
 export type Tone = "success" | "error" | "info" | "tip";
 export type CoachMsg = { tone: Tone; text: string };
 
-// ---------- fuzzy matching ----------
-const lev = (a: string, b: string) => {
-  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
-  for (let j = 1; j <= b.length; j++) d[0][j] = j;
-  for (let i = 1; i <= a.length; i++)
-    for (let j = 1; j <= b.length; j++)
-      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-  return d[a.length][b.length];
-};
-
-const closest = (word: string, options: string[]) => {
-  let best: string | undefined;
-  let score = Infinity;
-  for (const o of options) {
-    const s = lev(word.toLowerCase(), o);
-    if (s < score) { score = s; best = o; }
-  }
-  return score <= Math.max(2, Math.floor(word.length / 3)) ? best : undefined;
-};
-
-const RESOURCES = ["nodes", "pods", "deployments", "services", "svc", "namespaces", "ns", "events", "replicasets", "all"];
-
 // ---------- command explainer ----------
-const SUB_DESC: Record<string, string> = {
-  get: "lista recursos em formato de tabela (visão resumida)",
-  describe: "mostra todos os detalhes do recurso, incluindo a seção Events — o melhor amigo do troubleshooting",
-  run: "cria um Pod avulso a partir de uma imagem (sem Deployment por trás)",
-  create: "cria um recurso de forma imperativa",
-  scale: "altera o número de réplicas desejadas",
-  expose: "cria um Service apontando para os Pods do recurso",
-  set: "altera um campo de um recurso existente",
-  rollout: "gerencia o ciclo de vida de atualizações de um Deployment",
-  delete: "remove um recurso do cluster",
-  logs: "mostra o stdout/stderr do container",
-  apply: "aplica um manifesto YAML de forma declarativa (cria ou atualiza)",
-  top: "mostra consumo de CPU/memória (requer metrics-server)",
-  version: "mostra a versão do cliente kubectl e do API server",
-  "cluster-info": "mostra os endereços do control plane e dos serviços do sistema",
-  config: "lê/altera o kubeconfig (~/.kube/config)",
-};
-
 const TOKEN_DESC: Record<string, string> = {
   nodes: "tipo de recurso: as máquinas do cluster", node: "tipo de recurso: um nó do cluster", no: "abreviação de nodes",
   pods: "tipo de recurso: a menor unidade que roda containers", pod: "tipo de recurso: Pod", po: "abreviação de pods",
   deployment: "tipo de recurso: Deployment (gerencia ReplicaSets e rolling updates)", deployments: "tipo de recurso: Deployments", deploy: "abreviação de deployment",
   svc: "abreviação de service — IP/porta estáveis na frente dos Pods", service: "tipo de recurso: Service", services: "tipo de recurso: Services",
-  namespaces: "tipo de recurso: divisões lógicas do cluster", ns: "abreviação de namespaces",
+  namespaces: "tipo de recurso: divisões lógicas do cluster", ns: "abreviação de namespaces", namespace: "tipo de recurso: Namespace",
+  configmap: "tipo de recurso: configuração não sensível (chave/valor)", cm: "abreviação de configmap",
+  secret: "tipo de recurso: dados sensíveis (base64)", generic: "tipo de Secret genérico (Opaque)",
+  job: "tipo de recurso: tarefa que roda até completar", cronjob: "tipo de recurso: Job agendado (cron)",
+  role: "tipo de recurso: permissões RBAC dentro de um namespace", rolebinding: "liga uma Role a usuários/ServiceAccounts",
+  serviceaccount: "identidade usada por Pods", sa: "abreviação de serviceaccount",
+  networkpolicy: "regras de firewall entre Pods", netpol: "abreviação de networkpolicy",
+  pvc: "PersistentVolumeClaim — pedido de armazenamento", pv: "PersistentVolume — o disco em si",
   events: "eventos recentes do cluster (agendamento, pull de imagem, erros)",
   "current-context": "mostra qual cluster/contexto o kubectl está usando agora",
-  image: "sub-ação: trocar a imagem de um container",
-  status: "acompanha o rollout até terminar (ou falhar)",
-  history: "lista as revisões anteriores do Deployment",
-  undo: "volta para a revisão anterior (rollback)",
-  pull: "baixa uma imagem do registry",
-  ps: "lista containers em execução",
-  images: "lista imagens baixadas localmente",
-  init: "baixa providers/módulos e prepara o backend de state",
-  plan: "mostra o que será criado/alterado/destruído — sem aplicar nada",
-  "state": "subcomandos que leem o arquivo de state",
-  list: "lista os recursos gerenciados pelo state",
-  output: "mostra os outputs definidos no código",
-  destroy: "remove toda a infraestrutura gerenciada",
+  "can-i": "pergunta ao API server se a ação é permitida",
+  image: "sub-ação: trocar a imagem de um container", resources: "sub-ação: requests/limits de CPU e memória", env: "sub-ação: variáveis de ambiente",
+  status: "acompanha até terminar (ou falhar)", history: "lista as revisões anteriores", undo: "volta para a revisão anterior (rollback)",
+  snapshot: "operações de snapshot (backup) do etcd", save: "salva o snapshot no arquivo indicado", restore: "restaura um snapshot para um diretório de dados",
+  upgrade: "atualiza componentes do cluster", plan: "mostra o que será feito — sem aplicar nada", apply: "aplica as mudanças", list: "lista itens",
+  pull: "baixa uma imagem do registry", ps: "lista containers em execução", images: "lista imagens baixadas localmente",
+  init: "prepara o diretório de trabalho", state: "subcomandos que leem o state", output: "mostra os outputs", destroy: "remove a infraestrutura gerenciada",
+  kubelet: "agente do Kubernetes que roda em cada nó", containerd: "runtime de containers usado pelo kubelet",
 };
 
-const CMD_DESC: Record<string, string> = {
-  kubectl: "CLI do Kubernetes — envia requisições para o API server",
-  k: "alias comum para kubectl",
-  docker: "CLI do Docker — conversa com o Docker daemon",
-  terraform: "CLI do Terraform — Infrastructure as Code",
-  curl: "faz uma requisição HTTP e imprime a resposta",
-  cat: "imprime o conteúdo de um arquivo",
+const BUILTIN_DESC: Record<string, string> = {
+  cat: "imprime o conteúdo de um arquivo", ls: "lista arquivos", cd: "muda de diretório", vi: "abre o editor de texto", vim: "abre o editor de texto", nano: "abre o editor de texto",
+  curl: "faz uma requisição HTTP e imprime a resposta", wget: "faz uma requisição HTTP", ssh: "abre uma sessão em outra máquina", exit: "encerra a sessão ssh atual",
+  systemctl: "controla serviços do systemd (start, stop, enable, status)", journalctl: "lê os logs do systemd", "apt-get": "gerenciador de pacotes do Ubuntu/Debian",
+  grep: "filtra linhas que contêm o padrão", echo: "imprime o texto", export: "define uma variável de ambiente", base64: "codifica/decodifica base64", sed: "edita texto (substituições)",
+  mkdir: "cria diretórios", rm: "remove arquivos", head: "primeiras linhas", tail: "últimas linhas",
 };
 
-const flagDesc = (t: string): string | undefined => {
-  const [k, v] = t.split("=");
-  switch (k) {
-    case "-o": case "--output": return "formato de saída";
-    case "--image": return `imagem do container${v ? `: ${v}` : ""}`;
-    case "--replicas": return `quantidade de Pods desejada${v ? `: ${v}` : ""}`;
-    case "--port": return `porta do Service${v ? `: ${v}` : ""}`;
-    case "--target-port": return "porta do container para onde o tráfego vai";
-    case "--type": return `tipo do Service${v === "NodePort" ? ": NodePort abre uma porta 30000-32767 em todos os nós" : v ? `: ${v}` : ""}`;
-    case "-l": case "--selector": return "filtra por label (ex.: app=web)";
-    case "-n": case "--namespace": return "namespace alvo";
-    case "-A": case "--all-namespaces": return "todos os namespaces";
-    case "-f": return "arquivo de manifesto";
-    case "-d": return "detached — roda em background";
-    case "-p": return "mapeia porta host:container";
-    case "--name": return "nome do container";
-    case "-a": return "inclui containers parados";
-    case "-auto-approve": return "aplica sem pedir confirmação (comum em pipelines)";
-    case "--client": return "apenas a versão do cliente";
-    default: return undefined;
-  }
-};
+const SYSTEMCTL_ACTIONS: Record<string, string> = { start: "inicia o serviço agora", stop: "para o serviço", restart: "reinicia o serviço", enable: "faz o serviço subir no boot", status: "mostra se o serviço está rodando e os últimos logs", "daemon-reload": "recarrega arquivos de unidade após mudanças" };
 
 export const explainCommand = (cmd: string): { part: string; desc: string }[] => {
   const tokens = cmd.split(/\s+/).filter(Boolean);
+  const tool = getTool(tokens[0] ?? "");
   const out: { part: string; desc: string }[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     let desc: string | undefined;
-    if (i === 0) desc = CMD_DESC[t];
+    const flagKey = t.split("=")[0];
+    const val = t.includes("=") ? t.slice(t.indexOf("=") + 1) : undefined;
+    if (i === 0) desc = tool?.summary ?? BUILTIN_DESC[t];
     else if (/^<.*>$/.test(t)) desc = "placeholder — substitua pelo valor real (use Tab para autocompletar nomes)";
     else if (t.startsWith("-")) {
-      desc = flagDesc(t);
-      if ((t === "-o" || t === "-p" || t === "-l" || t === "-n" || t === "-f") && tokens[i + 1]) {
-        const val = tokens[++i];
-        out.push({ part: `${t} ${val}`, desc: `${desc}${t === "-o" && val === "wide" ? ": wide mostra colunas extras (IP, nó…)" : `: ${val}`}` });
+      desc = tool?.flags?.[flagKey];
+      if (desc && val) desc += `: ${val}`;
+      if (flagKey === "--type" && val === "NodePort") desc = "tipo do Service: NodePort abre uma porta 30000-32767 em todos os nós";
+      const takesValue = !t.includes("=") && tool?.valueFlags?.includes(t) && tokens[i + 1] && !tokens[i + 1].startsWith("-");
+      if (takesValue) {
+        const v = tokens[++i];
+        out.push({ part: `${t} ${v}`, desc: `${desc ?? "opção"}${t === "-o" && v === "wide" ? ": wide mostra colunas extras (IP, nó…)" : `: ${v}`}` });
         continue;
       }
-    } else if (i === 1 && (tokens[0] === "kubectl" || tokens[0] === "k")) desc = SUB_DESC[t];
-    else if (t.includes("/") && !t.startsWith("http")) desc = `recurso no formato tipo/nome → ${t.split("/")[0]} chamado "${t.split("/")[1]}"`;
+    } else if (i === 1 && tool?.subcommands?.[t]) desc = tool.subcommands[t];
+    else if (i === 1 && tokens[0] === "systemctl") desc = SYSTEMCTL_ACTIONS[t];
+    else if (t.includes("/") && !t.startsWith("http") && !t.startsWith("/") && !t.startsWith(".")) desc = `recurso no formato tipo/nome → ${t.split("/")[0]} chamado "${t.split("/")[1]}"`;
+    else if (t.startsWith("/") || t.startsWith("./") || /\.(ya?ml|tf|json|db|sh|cfg|ini|txt|conf)$/.test(t)) desc = "caminho de arquivo";
     else if (/^\w[\w-]*=[\w.:/-]+$/.test(t) && tokens.includes("image")) desc = `container=nova-imagem → container "${t.split("=")[0]}" passa a usar ${t.split("=")[1]}`;
     else if (/^localhost:|^\d+\.\d+/.test(t)) desc = "endereço:porta de destino";
-    else desc = TOKEN_DESC[t] ?? (tokens[0] === "kubectl" || tokens[0] === "docker" ? "nome do recurso" : undefined);
+    else desc = TOKEN_DESC[t] ?? (tool ? "nome/argumento" : undefined);
     if (tokens[0] === "kubectl" && i === 2 && tokens[1] === "create" && t === "deployment") desc = "tipo de recurso a criar: Deployment";
     out.push({ part: t, desc: desc ?? "argumento" });
   }
@@ -135,23 +86,28 @@ export const explainError = (e: Entry, sh: Shell): string | null => {
   if (/<[^>]+>/.test(cmd))
     return `Você executou o comando com o placeholder ${cmd.match(/<[^>]+>/)![0]}. Ele é só um marcador: troque pelo nome real (liste os recursos com kubectl get e use Tab para autocompletar).`;
 
+  const tool = getTool(tokens[0] ?? "");
+  const specific = tool?.explainError?.(cmd, output, sh);
+  if (specific) return specific;
+
   let m = /^bash: (\S+): command not found/.exec(output);
   if (m) {
-    const sug = closest(m[1], COMMANDS);
+    const sug = closest(m[1], sh.commandNames());
     return sug
       ? `"${m[1]}" não existe — parece erro de digitação de "${sug}". Tente: ${[sug, ...tokens.slice(1)].join(" ")}`
       : `O comando "${m[1]}" não existe neste ambiente. Digite help para ver os comandos disponíveis.`;
   }
 
-  m = /unknown command "([^"]+)" for "kubectl"/.exec(output);
+  m = /unknown command "([^"]*)" for "([\w-]+)/.exec(output);
   if (m) {
-    const sug = closest(m[1], KUBECTL_SUBS);
-    return `"${m[1]}" não é um subcomando do kubectl.${sug ? ` Você quis dizer "${sug}"?` : ""} A estrutura é sempre: kubectl <verbo> <recurso> <nome> [flags].`;
+    const subs = Object.keys(getTool(m[2])?.subcommands ?? {});
+    const sug = m[1] ? closest(m[1], subs) : undefined;
+    return `"${m[1]}" não é um subcomando do ${m[2]}.${sug ? ` Você quis dizer "${sug}"?` : ""}${m[2] === "kubectl" ? " A estrutura é sempre: kubectl <verbo> <recurso> <nome> [flags]." : subs.length ? ` Opções: ${subs.slice(0, 8).join(", ")}.` : ""}`;
   }
 
   m = /doesn't have a resource type "([^"]+)"/.exec(output);
   if (m) {
-    const sug = closest(m[1], RESOURCES);
+    const sug = closest(m[1], RESOURCE_WORDS);
     return `O tipo de recurso "${m[1]}" não existe.${sug ? ` Você quis dizer "${sug}"?` : ""} Tipos comuns: pods (po), deployments (deploy), services (svc), nodes (no), namespaces (ns).`;
   }
 
@@ -261,7 +217,8 @@ export const diagnose = (step: Step, sh: Shell, since: number): string => {
     const [c1, s1, r1] = exp.split(/\s+/);
     const [c2, s2, r2] = last.cmd.split(/\s+/);
     if (c1 !== c2) return `Você rodou "${last.cmd}", mas este passo usa o ${c1}. Esperado algo como: ${exp}`;
-    if (s1 !== s2) return `Quase: você usou "${c2} ${s2 ?? ""}", mas aqui o verbo certo é "${s1}". ${SUB_DESC[s1] ? `(${s1} ${SUB_DESC[s1]}.)` : ""} Esperado: ${exp}`;
+    const subDesc = getTool(c1)?.subcommands?.[s1];
+    if (s1 !== s2) return `Quase: você usou "${c2} ${s2 ?? ""}", mas aqui o verbo certo é "${s1}". ${subDesc ? `(${s1} ${subDesc}.)` : ""} Esperado: ${exp}`;
     if (r1 && r2 && r1 !== r2 && !r1.startsWith("<")) return `O verbo está certo, mas o alvo não: você usou "${r2}" e o passo pede "${r1}". Esperado: ${exp}`;
   }
   return step.fail ?? `Ainda não. Revise o objetivo do passo e tente: ${exp ?? "o comando indicado"}`;

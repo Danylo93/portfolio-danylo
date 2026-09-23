@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LABS } from "./data";
 import { Shell } from "./shell";
 import { diagnose, explainCommand, react } from "./coach";
+import { podName } from "./test-utils";
 
 // Commands that solve each lab. Placeholders are resolved against the live shell state.
 const SOLUTIONS: Record<string, ((sh: Shell) => string)[][]> = {
@@ -11,16 +12,16 @@ const SOLUTIONS: Record<string, ((sh: Shell) => string)[][]> = {
   "k8s-deploy": [
     [() => "kubectl create deployment web --image=nginx:1.25"],
     [() => "kubectl scale deployment web --replicas=3"],
-    [(sh) => `kubectl delete pod ${sh.state.pods[0].name}`, () => "kubectl get deployment web"],
+    [(sh) => `kubectl delete pod ${podName(sh, "web-")}`, () => "kubectl get deployment web"],
   ],
   "k8s-expose": [
     [() => "kubectl expose deployment web --port=80 --type=NodePort"],
     [() => "kubectl describe svc web"],
-    [(sh) => `curl localhost:${sh.state.services[0].nodePort}`],
+    [(sh) => `curl localhost:${sh.state.services.find((x) => x.name === "web")!.nodePort}`],
   ],
   "k8s-troubleshoot-nginx": [
     [() => "kubectl get pods"],
-    [(sh) => `kubectl describe pod ${sh.state.pods[0].name}`],
+    [(sh) => `kubectl describe pod ${podName(sh, "nginx-")}`],
     [() => "kubectl set image deployment/nginx nginx=nginx:1.25"],
     [() => "kubectl rollout status deployment/nginx"],
   ],

@@ -1,837 +1,678 @@
-// Simulated shell with an in-memory Kubernetes cluster, Docker engine and Terraform workspace.
+// Simulated Linux shell. Tools (kubectl, docker, terraform, ansible, …) are plugins from the registry.
+import { allTools, getTool, toolNames } from "./registry";
+import type { EditRequest, Entry, Host, LabState, Pod, Seed, ServiceUnit, ToolResult } from "./types";
+import { HOME, PROJECT, normalizePath, parseFlags, resolvePath, splitTop, tokenize } from "./util";
+import {
+  CP_NODE, createDeployment, deploymentReady as k8sDeploymentReady, initialNodes, podReady as k8sPodReady,
+  podStatus as k8sPodStatus, reconcile, staticPodYaml, tick, SYSTEM_NAMESPACES, NODE_AGE, newPod,
+} from "./k8s/cluster";
 
-export type Pod = {
-  name: string;
-  image: string;
-  createdAt: number;
-  node: string;
-  ip: string;
-  owner?: string;
-  labels: Record<string, string>;
-};
+export type { Entry, LabState, Seed } from "./types";
 
-export type Deployment = {
-  name: string;
-  image: string;
-  replicas: number;
-  createdAt: number;
-  revision: number;
-  history: { revision: number; image: string }[];
-};
+export type ExecResult = { output: string; clear?: boolean; edit?: EditRequest };
 
-export type Service = {
-  name: string;
-  type: "ClusterIP" | "NodePort" | "LoadBalancer";
-  clusterIP: string;
-  port: number;
-  targetPort: number;
-  nodePort?: number;
-  selector: Record<string, string>;
-  createdAt: number;
-};
+const ERROR_OUT =
+  /(^|\n)(error|Error|ERROR|bash:|docker: |curl: \(|wget: |cat: |ls: |cd: |rm: |cp: |mv: |mkdir: |sed: |grep: |ssh: |│ Error|fatal:|FATAL|E: |Failed to |"docker \w+" requires|command terminated with exit code)/;
 
-export type Container = {
-  id: string;
-  name: string;
-  image: string;
-  ports?: { host: number; container: number };
-  status: "running" | "exited";
-  createdAt: number;
-};
-
-export type Entry = { cmd: string; output: string; ok: boolean };
-
-const ERROR_OUT = /(^|\n)(error|Error|bash:|docker: |curl: \(|cat: |\u2502 Error|"docker \w+" requires)/;
-
-export type LabState = {
-  pods: Pod[];
-  deployments: Deployment[];
-  services: Service[];
-  images: string[];
-  containers: Container[];
-  tf: { initialized: boolean; planned: boolean; applied: boolean };
-  files: Record<string, string>;
-};
-
-export type Seed = Partial<LabState> & {
-  seedDeployments?: { name: string; image: string; replicas: number; ageSec?: number }[];
-};
-
-const NODES = [
-  { name: "lab-control-plane", role: "control-plane", ip: "172.18.0.2", cpu: "4", mem: "8Gi" },
-  { name: "lab-worker", role: "<none>", ip: "172.18.0.3", cpu: "4", mem: "8Gi" },
-  { name: "lab-worker2", role: "<none>", ip: "172.18.0.4", cpu: "4", mem: "8Gi" },
+const BUILTINS = [
+  "help", "clear", "ls", "cd", "pwd", "cat", "echo", "touch", "mkdir", "rm", "cp", "mv", "sed", "grep", "head", "tail", "wc", "sort", "uniq",
+  "base64", "tee", "whoami", "id", "hostname", "date", "uname", "history", "export", "unset", "env", "printenv", "which", "exit", "logout",
+  "ssh", "systemctl", "journalctl", "apt-get", "apt", "apt-mark", "apt-cache", "vi", "vim", "nano", "curl", "wget", "alias", "true", "false", "sleep", "watch", "source",
 ];
-const WORKERS = NODES.filter((n) => n.role !== "control-plane");
-const NODE_AGE = Date.now() - 1000 * 60 * 60 * 26;
 
-const GOOD_IMAGE =
-  /^(docker\.io\/)?(library\/)?(nginx|httpd|redis|busybox|alpine|node|python|postgres|mysql|traefik|hashicorp\/http-echo|registry\.k8s\.io\/[\w./-]+)(:[\w.-]+)?$/;
-const BAD_TAGS = /:(latestt|doesnotexist|9\.9\.9)$/;
+const HELP_BASE = `Comandos do shell: ls, cd, cat, vi/nano, echo, grep, head, tail, sed, curl, ssh, systemctl, journalctl, apt-get, export, alias
+Recursos: pipes (|), && , redirecionamento (> e >>), variáveis ($VAR)
+Atalhos: ↑/↓ histórico · Tab autocompletar · Ctrl+L limpar`;
 
-export const validImage = (img: string) => GOOD_IMAGE.test(img) && !BAD_TAGS.test(img);
-
-const HASH_CHARS = "bcdfghjklmnpqrstvwxz2456789";
-const rand = (n: number) =>
-  Array.from({ length: n }, () => HASH_CHARS[Math.floor(Math.random() * HASH_CHARS.length)]).join("");
-const hexId = () => Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
-
-const age = (from: number) => {
-  const s = Math.max(1, Math.floor((Date.now() - from) / 1000));
-  if (s < 120) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 10) return `${m}m${s % 60}s`;
-  if (m < 60 * 3) return `${m}m`;
-  const h = Math.floor(m / 60);
-  return h < 48 ? `${h}h` : `${Math.floor(h / 24)}d`;
-};
-
-const table = (rows: string[][]) => {
-  const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length)));
-  return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : c.padEnd(widths[i] + 3))).join("")).join("\n");
-};
-
-const tokenize = (line: string) => {
-  const out: string[] = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(line))) out.push(m[1] ?? m[2] ?? m[3]);
-  return out;
-};
-
-const parseFlags = (args: string[]) => {
-  const flags: Record<string, string | true> = {};
-  const pos: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a.startsWith("--")) {
-      const [k, v] = a.slice(2).split("=");
-      if (v !== undefined) flags[k] = v;
-      else if (args[i + 1] && !args[i + 1].startsWith("-") && ["replicas", "port", "type", "image", "target-port", "name", "namespace", "output", "selector"].includes(k)) flags[k] = args[++i];
-      else flags[k] = true;
-    } else if (a.startsWith("-") && a.length > 1) {
-      const k = a.slice(1);
-      if (["o", "n", "p", "l", "f"].includes(k) && args[i + 1]) flags[k] = args[++i];
-      else flags[k] = true;
-    } else pos.push(a);
-  }
-  return { flags, pos };
-};
-
-const NGINX_HTML = `<!DOCTYPE html>
-<html>
-<head>
-<title>Welcome to nginx!</title>
-</head>
-<body>
-<h1>Welcome to nginx!</h1>
-<p>If you see this page, the nginx web server is successfully installed and
-working. Further configuration is required.</p>
-</body>
-</html>`;
-
-const DEFAULT_FILES: Record<string, string> = {
-  "README.md": "# Lab environment\nCluster: kind-lab (3 nodes)\nUse `help` to list available commands.",
-};
+const hostTemplate = (name: string, ip: string): Host => ({
+  name,
+  ip,
+  services: {
+    kubelet: { active: true, enabled: true, logs: [] },
+    containerd: { active: true, enabled: true, logs: [] },
+  },
+  packages: { kubelet: "1.30.0-1.1", kubeadm: "1.30.0-1.1", kubectl: "1.30.0-1.1" },
+});
 
 export class Shell {
   state: LabState;
+  /** successful command segments, in order (used by step checks) */
   log: string[] = [];
+  /** one entry per submitted line, with output and success */
   entries: Entry[] = [];
+  /** free-form markers set by tools (e.g. "curl-svc:web") */
   flags = new Set<string>();
-  private ipSeq = 10;
+  env: Record<string, string> = { HOME, USER: "danylo", SHELL: "/bin/bash", PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", KUBECONFIG: `${HOME}/.kube/config` };
+  aliases: Record<string, string> = {};
+  cwd = PROJECT;
+  host = CP_NODE;
+  readonly homeHost = CP_NODE;
+  /** save hooks for editor sessions opened by tools (e.g. kubectl edit) */
+  editHooks = new Map<string, (content: string) => ToolResult>();
+  private store = new Map<string, unknown>();
 
   constructor(seed: Seed = {}) {
+    const nodes = initialNodes();
     this.state = {
       pods: [],
       deployments: [],
       services: [],
+      objects: [],
+      namespaces: SYSTEM_NAMESPACES.map((name) => ({ name, createdAt: NODE_AGE })),
+      nodes,
       images: seed.images ?? [],
       containers: seed.containers ?? [],
       tf: seed.tf ?? { initialized: false, planned: false, applied: false },
-      files: { ...DEFAULT_FILES, ...(seed.files ?? {}) },
+      files: {},
+      hosts: Object.fromEntries(nodes.map((n) => [n.name, hostTemplate(n.name, n.ip)])),
     };
-    for (const d of seed.seedDeployments ?? []) {
-      const createdAt = Date.now() - (d.ageSec ?? 600) * 1000;
-      this.state.deployments.push({
-        name: d.name, image: d.image, replicas: d.replicas, createdAt, revision: 1,
-        history: [{ revision: 1, image: d.image }],
+    this.writeFile(`${PROJECT}/README.md`, "# Lab environment\nCluster: kind-lab (3 nodes)\nUse `help` to list available commands.");
+    for (const comp of ["etcd", "kube-apiserver", "kube-controller-manager", "kube-scheduler"] as const)
+      this.writeFile(`/etc/kubernetes/manifests/${comp}.yaml`, staticPodYaml(comp));
+    for (const f of ["ca.crt", "ca.key", "server.crt", "server.key", "peer.crt", "peer.key"]) this.writeFile(`/etc/kubernetes/pki/etcd/${f}`, "-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----");
+    for (const f of ["admin.conf", "scheduler.conf", "controller-manager.conf", "kubelet.conf"]) this.writeFile(`/etc/kubernetes/${f}`, "apiVersion: v1\nkind: Config\nclusters:\n- cluster:\n    server: https://172.18.0.2:6443\n  name: kind-lab");
+    this.writeFile(`/var/lib/kubelet/config.yaml`, "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nstaticPodPath: /etc/kubernetes/manifests\nclusterDNS:\n- 10.96.0.10");
+    this.writeFile(`${HOME}/.kube/config`, "apiVersion: v1\nkind: Config\ncurrent-context: kind-lab");
+    for (const [p, c] of Object.entries(seed.files ?? {})) this.writeFile(p.startsWith("/") ? p : `${PROJECT}/${p}`, c);
+
+    this.seedSystemPods();
+    for (const d of seed.seedDeployments ?? [])
+      createDeployment(this, { name: d.name, image: d.image, replicas: d.replicas, namespace: d.namespace, createdAt: Date.now() - (d.ageSec ?? 600) * 1000 });
+    seed.setup?.(this);
+  }
+
+  private seedSystemPods() {
+    for (const comp of ["etcd", "kube-apiserver", "kube-controller-manager", "kube-scheduler"]) {
+      const p = newPod(this, {
+        name: `${comp}-${CP_NODE}`,
+        namespace: "kube-system",
+        labels: { component: comp, tier: "control-plane" },
+        spec: { containers: [{ name: comp, image: `registry.k8s.io/${comp}:v1.30.0` }] },
+        ownerKind: "Static",
+        createdAt: NODE_AGE,
       });
-      this.reconcile(createdAt);
+      p.node = CP_NODE;
+      p.scheduledAt = NODE_AGE;
+      p.ip = "172.18.0.2";
+    }
+    for (const n of this.state.nodes)
+      for (const ds of ["kube-proxy", "kindnet"]) {
+        const p = newPod(this, {
+          name: `${ds}-${Math.random().toString(36).slice(2, 7)}`,
+          namespace: "kube-system",
+          labels: { "k8s-app": ds },
+          spec: { containers: [{ name: ds, image: ds === "kube-proxy" ? "registry.k8s.io/kube-proxy:v1.30.0" : "docker.io/kindest/kindnetd:v20240513" }], tolerations: [{ operator: "Exists" }] },
+          ownerKind: "DaemonSet",
+          owner: ds,
+          createdAt: NODE_AGE,
+        });
+        p.node = n.name;
+        p.scheduledAt = NODE_AGE;
+        p.fixedStatus = "Running";
+        p.ip = n.ip;
+      }
+    createDeployment(this, {
+      name: "coredns",
+      namespace: "kube-system",
+      replicas: 2,
+      labels: { "k8s-app": "kube-dns" },
+      template: { labels: { "k8s-app": "kube-dns" }, spec: { containers: [{ name: "coredns", image: "registry.k8s.io/coredns/coredns:v1.11.1", ports: [{ containerPort: 53 }] }], tolerations: [{ key: "node-role.kubernetes.io/control-plane", effect: "NoSchedule" }] } },
+      createdAt: NODE_AGE,
+    });
+  }
+
+  // ---------- generic plugin state ----------
+  ext<T>(key: string, init: () => T): T {
+    if (!this.store.has(key)) this.store.set(key, init());
+    return this.store.get(key) as T;
+  }
+
+  // ---------- hosts ----------
+  hostOf(name = this.host): Host {
+    if (!this.state.hosts[name]) this.state.hosts[name] = { name, ip: `10.0.1.${10 + Object.keys(this.state.hosts).length}`, services: {}, packages: {} };
+    return this.state.hosts[name];
+  }
+
+  prompt() {
+    const dir = this.cwd === HOME ? "~" : this.cwd.startsWith(HOME + "/") ? "~" + this.cwd.slice(HOME.length) : this.cwd;
+    return `danylo@${this.host}:${dir}$`;
+  }
+
+  // ---------- filesystem ----------
+  resolve(p: string) {
+    return resolvePath(this.cwd, p);
+  }
+  readFile(p: string): string | undefined {
+    return this.state.files[this.resolve(p)];
+  }
+  writeFile(p: string, content: string) {
+    this.state.files[this.resolve(p)] = content;
+  }
+  exists(p: string) {
+    const abs = this.resolve(p);
+    return abs in this.state.files || this.isDir(abs);
+  }
+  isDir(p: string) {
+    const abs = this.resolve(p);
+    if (abs === "/") return true;
+    return Object.keys(this.state.files).some((f) => f.startsWith(abs + "/")) || this.dirs().has(abs);
+  }
+  private dirs() {
+    return this.ext("dirs", () => new Set<string>([HOME, PROJECT, "/tmp", "/opt", "/etc", "/var/lib"]));
+  }
+  mkdir(p: string) {
+    let cur = this.resolve(p);
+    while (cur !== "/") {
+      this.dirs().add(cur);
+      cur = normalizePath(cur + "/..");
     }
   }
-
-  // ---------- cluster helpers ----------
-  private nextIp() {
-    this.ipSeq++;
-    return `10.244.${1 + (this.ipSeq % 2)}.${this.ipSeq}`;
-  }
-
-  private newPod(name: string, image: string, labels: Record<string, string>, owner?: string, createdAt = Date.now()): Pod {
-    const node = WORKERS[this.state.pods.length % WORKERS.length].name;
-    return { name, image, createdAt, node, ip: this.nextIp(), owner, labels };
-  }
-
-  private reconcile(createdAt = Date.now()) {
-    for (const d of this.state.deployments) {
-      let owned = this.state.pods.filter((p) => p.owner === d.name);
-      const stale = owned.filter((p) => p.image !== d.image);
-      if (stale.length) {
-        this.state.pods = this.state.pods.filter((p) => !stale.includes(p));
-        owned = owned.filter((p) => !stale.includes(p));
-      }
-      const rsHash = rand(10).slice(0, 9);
-      while (owned.length < d.replicas) {
-        const pod = this.newPod(`${d.name}-${rsHash}-${rand(5)}`, d.image, { app: d.name }, d.name, createdAt);
-        this.state.pods.push(pod);
-        owned.push(pod);
-      }
-      while (owned.length > d.replicas) {
-        const victim = owned.pop()!;
-        this.state.pods = this.state.pods.filter((p) => p !== victim);
-      }
+  listDir(p: string) {
+    const abs = this.resolve(p);
+    const prefix = abs === "/" ? "/" : abs + "/";
+    const names = new Set<string>();
+    for (const f of [...Object.keys(this.state.files), ...this.dirs()]) {
+      if (f.startsWith(prefix) && f !== abs) names.add(f.slice(prefix.length).split("/")[0] + (f.slice(prefix.length).includes("/") ? "/" : ""));
     }
-    const names = new Set(this.state.deployments.map((d) => d.name));
-    this.state.pods = this.state.pods.filter((p) => !p.owner || names.has(p.owner));
+    return [...names].sort();
+  }
+  removePath(p: string) {
+    const abs = this.resolve(p);
+    let n = 0;
+    for (const f of Object.keys(this.state.files))
+      if (f === abs || f.startsWith(abs + "/")) {
+        delete this.state.files[f];
+        n++;
+      }
+    for (const d of [...this.dirs()])
+      if (d === abs || d.startsWith(abs + "/")) {
+        this.dirs().delete(d);
+        n++;
+      }
+    return n > 0;
   }
 
+  // ---------- k8s helpers used by lab checks ----------
   podStatus(p: Pod) {
-    const ms = Date.now() - p.createdAt;
-    if (!validImage(p.image)) return ms < 4000 ? "ErrImagePull" : "ImagePullBackOff";
-    return ms < 2500 ? "ContainerCreating" : "Running";
+    return k8sPodStatus(this, p);
   }
-
   podReady(p: Pod) {
-    return this.podStatus(p) === "Running";
+    return k8sPodReady(this, p);
   }
-
-  deploymentReady(name: string) {
-    const d = this.state.deployments.find((x) => x.name === name);
-    if (!d) return false;
-    const pods = this.state.pods.filter((p) => p.owner === name);
-    return pods.length === d.replicas && pods.every((p) => this.podReady(p));
+  deploymentReady(name: string, ns = "default") {
+    return k8sDeploymentReady(this, name, ns);
   }
-
-  // ---------- entrypoint ----------
-  exec(line: string): { output: string; clear?: boolean } {
-    const trimmed = line.trim();
-    if (!trimmed) return { output: "" };
-    const [cmd, ...args] = tokenize(trimmed);
-    let output: string;
-    let ok = true;
-    try {
-      switch (cmd) {
-        case "clear": this.log.push(trimmed); this.entries.push({ cmd: trimmed, output: "", ok: true }); return { output: "", clear: true };
-        case "help": output = HELP; break;
-        case "kubectl": case "k": output = this.kubectl(args); break;
-        case "docker": output = this.docker(args); break;
-        case "terraform": case "tf": output = this.terraform(args); break;
-        case "curl": output = this.curl(args); break;
-        case "ls": output = Object.keys(this.state.files).sort().join("  "); break;
-        case "cat": output = args.map((f) => this.state.files[f] ?? `cat: ${f}: No such file or directory`).join("\n"); break;
-        case "pwd": output = "/home/danylo/project"; break;
-        case "whoami": output = "danylo"; break;
-        case "hostname": output = "lab-control-plane"; break;
-        case "date": output = new Date().toString(); break;
-        case "uname": output = args.includes("-a") ? "Linux lab-control-plane 6.8.0-45-generic #45-Ubuntu SMP x86_64 GNU/Linux" : "Linux"; break;
-        case "echo": output = args.join(" "); break;
-        case "history": output = this.log.map((l, i) => `${String(i + 1).padStart(4)}  ${l}`).join("\n"); break;
-        case "minikube": case "kind": output = "kind-lab cluster is already running. Use kubectl to interact with it."; break;
-        default: output = `bash: ${cmd}: command not found`; ok = false;
-      }
-    } catch (e) {
-      output = (e as Error).message;
-      ok = false;
-    }
-    ok = ok && !ERROR_OUT.test(output);
-    if (ok) this.log.push(trimmed);
-    this.entries.push({ cmd: trimmed, output, ok });
-    return { output };
+  reconcile() {
+    reconcile(this);
   }
 
   ran(re: RegExp) {
     return this.log.some((l) => re.test(l));
   }
 
-  // ---------- kubectl ----------
-  private kubectl(args: string[]): string {
-    const { flags, pos } = parseFlags(args);
-    const [sub, ...rest] = pos;
-    const resolve = (r?: string) => {
-      if (!r) return "";
-      const map: Record<string, string> = {
-        no: "nodes", node: "nodes", nodes: "nodes",
-        po: "pods", pod: "pods", pods: "pods",
-        deploy: "deployments", deployment: "deployments", deployments: "deployments",
-        svc: "services", service: "services", services: "services",
-        ns: "namespaces", namespace: "namespaces", namespaces: "namespaces",
-        all: "all", events: "events", ev: "events", rs: "replicasets", replicaset: "replicasets", replicasets: "replicasets",
-      };
-      return map[r.toLowerCase()] ?? r;
-    };
-    const splitRef = (a?: string, b?: string): [string, string | undefined] => {
-      if (a?.includes("/")) {
-        const [r, n] = a.split("/");
-        return [resolve(r), n];
-      }
-      return [resolve(a), b];
-    };
+  commandNames() {
+    return Array.from(new Set([...toolNames(), ...BUILTINS, ...Object.keys(this.aliases)])).sort();
+  }
 
-    switch (sub) {
-      case undefined:
+  // ---------- execution ----------
+  exec(line: string): ExecResult {
+    const trimmed = line.trim();
+    if (!trimmed) return { output: "" };
+    tick(this);
+    const outputs: string[] = [];
+    let ok = true;
+    let clear = false;
+    let edit: EditRequest | undefined;
+    for (const seg of splitTop(trimmed, "&&")) {
+      if (!seg) continue;
+      const r = this.runSegment(seg);
+      if (r.clear) clear = true;
+      if (r.edit) edit = r.edit;
+      if (r.output) outputs.push(r.output);
+      if (r.ok) this.log.push(seg);
+      else {
+        ok = false;
+        break;
+      }
+      if (edit) break;
+    }
+    const output = outputs.join("\n");
+    this.entries.push({ cmd: trimmed, output, ok });
+    return { output: clear ? "" : output, clear, edit };
+  }
+
+  /** Called by the terminal editor when the user saves. */
+  saveEdit(path: string, content: string): string {
+    const hook = this.editHooks.get(path);
+    let output: string;
+    let ok = true;
+    if (hook) {
+      this.editHooks.delete(path);
+      const r = hook(content);
+      output = typeof r === "string" ? r : r.output;
+      ok = typeof r === "string" ? !ERROR_OUT.test(r) : r.ok ?? !ERROR_OUT.test(r.output);
+    } else {
+      this.writeFile(path, content);
+      output = `"${path}" ${content.split("\n").length}L, ${content.length}B written`;
+    }
+    const cmd = `:wq ${path}`;
+    if (ok) this.log.push(cmd);
+    this.entries.push({ cmd, output, ok });
+    return output;
+  }
+
+  private runSegment(seg: string): { output: string; ok: boolean; clear?: boolean; edit?: EditRequest } {
+    // strip stderr redirects we don't model
+    let s = seg.replace(/\s2>&1/g, "").replace(/\s2>\s*\/dev\/null/g, "");
+    let redirect: { file: string; append: boolean } | undefined;
+    const m = /^(.*?[^>])\s*(>>?)\s*(\S+)\s*$/.exec(s);
+    if (m && !/['"]/.test(m[3]) && splitTop(s, ">").length > 1) {
+      s = m[1].trim();
+      redirect = { file: m[3], append: m[2] === ">>" };
+    }
+    let stdin: string | undefined;
+    let res: { output: string; ok: boolean; clear?: boolean; edit?: EditRequest } = { output: "", ok: true };
+    for (const stage of splitTop(s, "|")) {
+      res = this.runCommand(stage, stdin);
+      if (!res.ok) return res;
+      stdin = res.output;
+    }
+    if (redirect) {
+      if (redirect.file !== "/dev/null") {
+        const target = this.resolve(redirect.file);
+        const prev = redirect.append ? this.state.files[target] ?? "" : "";
+        this.state.files[target] = prev + (prev && !prev.endsWith("\n") ? "\n" : "") + res.output + (res.output ? "\n" : "");
+      }
+      return { ...res, output: "" };
+    }
+    return res;
+  }
+
+  private expandVars(line: string) {
+    // $VAR / ${VAR} outside single quotes
+    let out = "";
+    let inSingle = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (c === "'") inSingle = !inSingle;
+      if (c === "$" && !inSingle) {
+        const m = /^\$(\{(\w+)\}|(\w+))/.exec(line.slice(i));
+        if (m) {
+          out += this.env[m[2] ?? m[3]] ?? "";
+          i += m[0].length - 1;
+          continue;
+        }
+      }
+      out += c;
+    }
+    return out;
+  }
+
+  private runCommand(stage: string, stdin?: string): { output: string; ok: boolean; clear?: boolean; edit?: EditRequest } {
+    let tokens = tokenize(this.expandVars(stage));
+    const env: Record<string, string> = { ...this.env };
+    while (tokens[0] === "sudo" || /^[A-Za-z_]\w*=/.test(tokens[0] ?? "")) {
+      if (tokens[0] === "sudo") tokens = tokens.slice(tokens[1] === "-i" || tokens[1] === "-E" ? 2 : 1);
+      else {
+        const [k, ...v] = tokens[0].split("=");
+        env[k] = v.join("=");
+        tokens = tokens.slice(1);
+      }
+    }
+    if (!tokens.length) return { output: "", ok: true };
+    if (this.aliases[tokens[0]]) tokens = [...tokenize(this.aliases[tokens[0]]), ...tokens.slice(1)];
+    const [cmd, ...args] = tokens;
+
+    const tool = getTool(cmd);
+    if (tool) {
+      const { flags, pos, rest } = parseFlags(args, tool.valueFlags);
+      let r: ToolResult;
+      try {
+        r = tool.run({ sh: this, args, flags, pos, rest, env, stdin });
+      } catch (e) {
+        return { output: (e as Error).message, ok: false };
+      }
+      if (typeof r === "string") return { output: r, ok: !ERROR_OUT.test(r) };
+      return { output: r.output, ok: r.ok ?? !ERROR_OUT.test(r.output), edit: r.edit, clear: r.clear };
+    }
+    try {
+      const out = this.builtin(cmd, args, stdin, env);
+      if (out === null) return { output: `bash: ${cmd}: command not found`, ok: false };
+      if (typeof out === "object") return { ...out, ok: true };
+      return { output: out, ok: !ERROR_OUT.test(out) };
+    } catch (e) {
+      return { output: (e as Error).message, ok: false };
+    }
+  }
+
+  // ---------- builtins ----------
+  private builtin(cmd: string, args: string[], stdin: string | undefined, env: Record<string, string>): string | { output: string; clear?: boolean; edit?: EditRequest } | null {
+    const inputOf = (files: string[]) => (files.length ? files.map((f) => this.readFile(f) ?? "").join("\n") : stdin ?? "");
+    switch (cmd) {
       case "help":
-        return "kubectl controls the Kubernetes cluster manager.\n\nBasic Commands:\n  create, expose, run, set, get, delete, describe, logs, scale, rollout, apply, top, version, cluster-info";
-      case "cluster-info":
-        return "Kubernetes control plane is running at https://127.0.0.1:6443\nCoreDNS is running at https://127.0.0.1:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy\n\nTo further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.";
-      case "version":
-        if (flags.client) return "Client Version: v1.30.2\nKustomize Version: v5.0.4-0.20230601165947-6ce0bf390ce3";
-        return "Client Version: v1.30.2\nKustomize Version: v5.0.4-0.20230601165947-6ce0bf390ce3\nServer Version: v1.30.0";
-      case "config":
-        if (rest[0] === "current-context") return "kind-lab";
-        if (rest[0] === "get-contexts") return table([["CURRENT", "NAME", "CLUSTER", "AUTHINFO", "NAMESPACE"], ["*", "kind-lab", "kind-lab", "kind-lab", ""]]);
-        return "error: unsupported config subcommand in this lab";
-      case "get": return this.kGet(...splitRef(rest[0], rest[1]), flags);
-      case "describe": return this.kDescribe(...splitRef(rest[0], rest[1]));
-      case "run": {
-        const name = rest[0];
-        const image = flags.image as string;
-        if (!name || typeof image !== "string") return "error: required flag(s) \"image\" not set";
-        if (this.state.pods.some((p) => p.name === name)) return `Error from server (AlreadyExists): pods "${name}" already exists`;
-        this.state.pods.push(this.newPod(name, image, { run: name }));
-        return `pod/${name} created`;
-      }
-      case "create": {
-        if (resolve(rest[0]) !== "deployments") return `error: this lab supports "kubectl create deployment" only`;
-        const name = rest[1];
-        const image = flags.image as string;
-        if (!name || typeof image !== "string") return "error: required flag(s) \"image\" not set";
-        if (this.state.deployments.some((d) => d.name === name)) return `error: failed to create deployment: deployments.apps "${name}" already exists`;
-        const replicas = Number(flags.replicas ?? 1);
-        this.state.deployments.push({ name, image, replicas, createdAt: Date.now(), revision: 1, history: [{ revision: 1, image }] });
-        this.reconcile();
-        return `deployment.apps/${name} created`;
-      }
-      case "scale": {
-        const [r, name] = splitRef(rest[0], rest[1]);
-        if (r !== "deployments") return "error: only deployments can be scaled in this lab";
-        const d = this.state.deployments.find((x) => x.name === name);
-        if (!d) return `Error from server (NotFound): deployments.apps "${name}" not found`;
-        const n = Number(flags.replicas);
-        if (Number.isNaN(n)) return "error: --replicas=COUNT is required";
-        d.replicas = n;
-        this.reconcile();
-        return `deployment.apps/${name} scaled`;
-      }
-      case "expose": {
-        const [r, name] = splitRef(rest[0], rest[1]);
-        if (r !== "deployments" && r !== "pods") return "error: expose supports deployment or pod";
-        const exists = r === "deployments" ? this.state.deployments.some((d) => d.name === name) : this.state.pods.some((p) => p.name === name);
-        if (!exists) return `Error from server (NotFound): ${r === "deployments" ? "deployments.apps" : "pods"} "${name}" not found`;
-        if (!flags.port) return "error: couldn't find port via --port flag or introspection";
-        const svcName = typeof flags.name === "string" ? flags.name : name!;
-        if (this.state.services.some((s) => s.name === svcName)) return `Error from server (AlreadyExists): services "${svcName}" already exists`;
-        const type = (typeof flags.type === "string" ? flags.type : "ClusterIP") as Service["type"];
-        const port = Number(flags.port);
-        this.state.services.push({
-          name: svcName, type, port,
-          targetPort: Number(flags["target-port"] ?? port),
-          clusterIP: `10.96.${Math.floor(Math.random() * 200) + 20}.${Math.floor(Math.random() * 250) + 2}`,
-          nodePort: type === "ClusterIP" ? undefined : 30000 + Math.floor(Math.random() * 2767),
-          selector: r === "deployments" ? { app: name! } : { run: name! },
-          createdAt: Date.now(),
-        });
-        return `service/${svcName} exposed`;
-      }
-      case "set": {
-        if (rest[0] !== "image") return "error: only \"kubectl set image\" is supported";
-        const [r, name] = splitRef(rest[1]);
-        const d = this.state.deployments.find((x) => x.name === name);
-        if (r !== "deployments" || !d) return `Error from server (NotFound): deployments.apps "${name}" not found`;
-        const assign = rest[2];
-        if (!assign?.includes("=")) return "error: expected CONTAINER=IMAGE";
-        const [container, image] = assign.split("=");
-        if (container !== d.name && container !== "*") return `error: unable to find container named "${container}"`;
-        if (image === d.image) return `deployment.apps/${name} image unchanged`;
-        d.image = image;
-        d.revision++;
-        d.history.push({ revision: d.revision, image });
-        this.reconcile();
-        return `deployment.apps/${name} image updated`;
-      }
-      case "rollout": {
-        const action = rest[0];
-        const [r, name] = splitRef(rest[1], rest[2]);
-        const d = this.state.deployments.find((x) => x.name === name);
-        if (r !== "deployments" || !d) return `Error from server (NotFound): deployments.apps "${name}" not found`;
-        if (action === "status") {
-          if (!validImage(d.image))
-            return `Waiting for deployment "${name}" rollout to finish: 0 of ${d.replicas} updated replicas are available...\nerror: deployment "${name}" exceeded its progress deadline`;
-          const ready = this.state.pods.filter((p) => p.owner === name && this.podReady(p)).length;
-          const wait = ready < d.replicas ? `Waiting for deployment "${name}" rollout to finish: ${ready} of ${d.replicas} updated replicas are available...\n` : "";
-          return `${wait}deployment "${name}" successfully rolled out`;
-        }
-        if (action === "history")
-          return `deployment.apps/${name}\n` + table([["REVISION", "CHANGE-CAUSE"], ...d.history.map((h) => [String(h.revision), `image=${h.image}`])]);
-        if (action === "undo") {
-          if (d.history.length < 2) return `error: no rollout history found for deployment "${name}"`;
-          const prev = d.history[d.history.length - 2];
-          d.image = prev.image;
-          d.revision++;
-          d.history = d.history.filter((h) => h !== prev);
-          d.history.push({ revision: d.revision, image: prev.image });
-          this.reconcile();
-          return `deployment.apps/${name} rolled back`;
-        }
-        if (action === "restart") {
-          this.state.pods = this.state.pods.filter((p) => p.owner !== name);
-          this.reconcile();
-          return `deployment.apps/${name} restarted`;
-        }
-        return "error: rollout supports status | history | undo | restart";
-      }
-      case "delete": {
-        const [r, name] = splitRef(rest[0], rest[1]);
-        if (r === "pods") {
-          const p = this.state.pods.find((x) => x.name === name);
-          if (!p) return `Error from server (NotFound): pods "${name}" not found`;
-          this.state.pods = this.state.pods.filter((x) => x !== p);
-          this.reconcile();
-          return `pod "${name}" deleted`;
-        }
-        if (r === "deployments") {
-          if (!this.state.deployments.some((d) => d.name === name)) return `Error from server (NotFound): deployments.apps "${name}" not found`;
-          this.state.deployments = this.state.deployments.filter((d) => d.name !== name);
-          this.reconcile();
-          return `deployment.apps "${name}" deleted`;
-        }
-        if (r === "services") {
-          if (!this.state.services.some((s) => s.name === name)) return `Error from server (NotFound): services "${name}" not found`;
-          this.state.services = this.state.services.filter((s) => s.name !== name);
-          return `service "${name}" deleted`;
-        }
-        return `error: the server doesn't have a resource type "${rest[0]}"`;
-      }
-      case "logs": {
-        const p = this.state.pods.find((x) => x.name === rest[0]) ?? this.state.pods.find((x) => rest[0]?.startsWith("deployment/") && x.owner === rest[0].split("/")[1]);
-        if (!p) return `error: pods "${rest[0]}" not found`;
-        if (!this.podReady(p)) return `Error from server (BadRequest): container "${p.owner ?? p.name}" in pod "${p.name}" is waiting to start: ${this.podStatus(p) === "ContainerCreating" ? "ContainerCreating" : "trying and failing to pull image"}`;
-        const t = new Date(p.createdAt).toISOString().replace("T", " ").slice(0, 19);
-        return [
-          "/docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration",
-          "/docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh",
-          "/docker-entrypoint.sh: Configuration complete; ready for start up",
-          `${t} [notice] 1#1: using the "epoll" event method`,
-          `${t} [notice] 1#1: nginx/1.25.5`,
-          `${t} [notice] 1#1: start worker processes`,
-        ].join("\n");
-      }
-      case "apply": {
-        const file = flags.f as string;
-        const content = this.state.files[file];
-        if (!content) return `error: the path "${file}" does not exist`;
-        const name = /metadata:\s*\n\s*name:\s*(\S+)/.exec(content)?.[1];
-        const image = /image:\s*(\S+)/.exec(content)?.[1];
-        const replicas = Number(/replicas:\s*(\d+)/.exec(content)?.[1] ?? 1);
-        if (!name || !image) return "error: error validating data: missing metadata.name or image";
-        const d = this.state.deployments.find((x) => x.name === name);
-        if (!d) {
-          this.state.deployments.push({ name, image, replicas, createdAt: Date.now(), revision: 1, history: [{ revision: 1, image }] });
-          this.reconcile();
-          return `deployment.apps/${name} created`;
-        }
-        const changed = d.image !== image || d.replicas !== replicas;
-        if (d.image !== image) { d.revision++; d.history.push({ revision: d.revision, image }); }
-        d.image = image; d.replicas = replicas;
-        this.reconcile();
-        return `deployment.apps/${name} ${changed ? "configured" : "unchanged"}`;
-      }
-      case "top":
-        if (resolve(rest[0]) === "nodes")
-          return table([["NAME", "CPU(cores)", "CPU%", "MEMORY(bytes)", "MEMORY%"], ...NODES.map((n, i) => [n.name, `${180 + i * 45}m`, `${4 + i}%`, `${900 + i * 130}Mi`, `${11 + i}%`])]);
-        return table([["NAME", "CPU(cores)", "MEMORY(bytes)"], ...this.state.pods.filter((p) => this.podReady(p)).map((p) => [p.name, "1m", "3Mi"])]);
-      default:
-        return `error: unknown command "${sub}" for "kubectl"\nRun 'kubectl help' for usage.`;
-    }
-  }
-
-  private kGet(res: string, name: string | undefined, flags: Record<string, string | true>): string {
-    const wide = flags.o === "wide" || flags.output === "wide";
-    const sel = typeof flags.l === "string" ? flags.l : typeof flags.selector === "string" ? flags.selector : undefined;
-    const match = (labels: Record<string, string>) => {
-      if (!sel) return true;
-      const [k, v] = sel.split("=");
-      return labels[k] === v;
-    };
-    switch (res) {
-      case "nodes": {
-        const nodes = NODES.filter((n) => !name || n.name === name);
-        if (!nodes.length) return `Error from server (NotFound): nodes "${name}" not found`;
-        const head = ["NAME", "STATUS", "ROLES", "AGE", "VERSION"];
-        if (wide) head.push("INTERNAL-IP", "OS-IMAGE", "CONTAINER-RUNTIME");
-        return table([head, ...nodes.map((n) => {
-          const row = [n.name, "Ready", n.role, age(NODE_AGE), "v1.30.0"];
-          if (wide) row.push(n.ip, "Debian GNU/Linux 12 (bookworm)", "containerd://1.7.18");
-          return row;
-        })]);
-      }
-      case "pods": {
-        const pods = this.state.pods.filter((p) => (!name || p.name === name) && match(p.labels));
-        if (name && !pods.length) return `Error from server (NotFound): pods "${name}" not found`;
-        if (!pods.length) return "No resources found in default namespace.";
-        const head = ["NAME", "READY", "STATUS", "RESTARTS", "AGE"];
-        if (wide) head.push("IP", "NODE");
-        return table([head, ...pods.map((p) => {
-          const row = [p.name, this.podReady(p) ? "1/1" : "0/1", this.podStatus(p), "0", age(p.createdAt)];
-          if (wide) row.push(this.podStatus(p) === "Running" ? p.ip : "<none>", p.node);
-          return row;
-        })]);
-      }
-      case "deployments": {
-        const deps = this.state.deployments.filter((d) => !name || d.name === name);
-        if (name && !deps.length) return `Error from server (NotFound): deployments.apps "${name}" not found`;
-        if (!deps.length) return "No resources found in default namespace.";
-        return table([["NAME", "READY", "UP-TO-DATE", "AVAILABLE", "AGE"], ...deps.map((d) => {
-          const ready = this.state.pods.filter((p) => p.owner === d.name && this.podReady(p)).length;
-          return [d.name, `${ready}/${d.replicas}`, String(d.replicas), String(ready), age(d.createdAt)];
-        })]);
-      }
-      case "services": {
-        const k8s: Service = { name: "kubernetes", type: "ClusterIP", clusterIP: "10.96.0.1", port: 443, targetPort: 6443, selector: {}, createdAt: NODE_AGE };
-        const svcs = [k8s, ...this.state.services].filter((s) => !name || s.name === name);
-        if (!svcs.length) return `Error from server (NotFound): services "${name}" not found`;
-        return table([["NAME", "TYPE", "CLUSTER-IP", "EXTERNAL-IP", "PORT(S)", "AGE"], ...svcs.map((s) => [
-          s.name, s.type, s.clusterIP, s.type === "LoadBalancer" ? "<pending>" : "<none>",
-          s.nodePort ? `${s.port}:${s.nodePort}/TCP` : `${s.port}/TCP`, age(s.createdAt),
-        ])]);
-      }
-      case "namespaces":
-        return table([["NAME", "STATUS", "AGE"], ...["default", "kube-node-lease", "kube-public", "kube-system", "local-path-storage"].map((n) => [n, "Active", age(NODE_AGE)])]);
-      case "replicasets":
-        if (!this.state.deployments.length) return "No resources found in default namespace.";
-        return table([["NAME", "DESIRED", "CURRENT", "READY", "AGE"], ...this.state.deployments.map((d) => {
-          const pods = this.state.pods.filter((p) => p.owner === d.name);
-          const hash = pods[0]?.name.split("-").slice(-2, -1)[0] ?? rand(9);
-          return [`${d.name}-${hash}`, String(d.replicas), String(pods.length), String(pods.filter((p) => this.podReady(p)).length), age(d.createdAt)];
-        })]);
-      case "events": {
-        const ev = this.state.pods.flatMap((p) => validImage(p.image)
-          ? [["Normal", "Scheduled", `pod/${p.name}`, `Successfully assigned default/${p.name} to ${p.node}`], ["Normal", "Started", `pod/${p.name}`, "Started container"]]
-          : [["Warning", "Failed", `pod/${p.name}`, `Failed to pull image "${p.image}": not found`], ["Warning", "BackOff", `pod/${p.name}`, `Back-off pulling image "${p.image}"`]]);
-        if (!ev.length) return "No resources found in default namespace.";
-        return table([["TYPE", "REASON", "OBJECT", "MESSAGE"], ...ev]);
-      }
-      case "all": {
-        const parts = [this.kGet("pods", undefined, {}), this.kGet("services", undefined, {})];
-        if (this.state.deployments.length) parts.push(this.kGet("deployments", undefined, {}));
-        return parts.filter((p) => !p.startsWith("No resources")).join("\n\n");
-      }
-      case "":
-        return "You must specify the type of resource to get. Use \"kubectl api-resources\" for a complete list of supported resources.";
-      default:
-        return `error: the server doesn't have a resource type "${res}"`;
-    }
-  }
-
-  private kDescribe(res: string, name?: string): string {
-    if (res === "nodes") {
-      const n = NODES.find((x) => x.name === name) ?? (name ? undefined : NODES[1]);
-      if (!n) return `Error from server (NotFound): nodes "${name}" not found`;
-      const pods = this.state.pods.filter((p) => p.node === n.name);
-      return [
-        `Name:               ${n.name}`,
-        `Roles:              ${n.role}`,
-        `Labels:             kubernetes.io/hostname=${n.name}`,
-        `                    kubernetes.io/os=linux`,
-        `CreationTimestamp:  ${new Date(NODE_AGE).toUTCString()}`,
-        "Conditions:",
-        "  Type             Status  Reason                       Message",
-        "  ----             ------  ------                       -------",
-        "  MemoryPressure   False   KubeletHasSufficientMemory   kubelet has sufficient memory available",
-        "  DiskPressure     False   KubeletHasNoDiskPressure     kubelet has no disk pressure",
-        "  PIDPressure      False   KubeletHasSufficientPID      kubelet has sufficient PID available",
-        "  Ready            True    KubeletReady                 kubelet is posting ready status",
-        "Addresses:",
-        `  InternalIP:  ${n.ip}`,
-        `  Hostname:    ${n.name}`,
-        "Capacity:",
-        `  cpu:     ${n.cpu}`,
-        `  memory:  ${n.mem}`,
-        "  pods:    110",
-        "System Info:",
-        "  Kernel Version:             6.8.0-45-generic",
-        "  Container Runtime Version:  containerd://1.7.18",
-        "  Kubelet Version:            v1.30.0",
-        `Non-terminated Pods:          (${pods.length + 2} in total)`,
-      ].join("\n");
-    }
-    if (res === "pods") {
-      const p = this.state.pods.find((x) => x.name === name);
-      if (!p) return `Error from server (NotFound): pods "${name}" not found`;
-      const st = this.podStatus(p);
-      const events = validImage(p.image)
-        ? [
-            `  Normal  Scheduled  ${age(p.createdAt)}  default-scheduler  Successfully assigned default/${p.name} to ${p.node}`,
-            `  Normal  Pulled     ${age(p.createdAt)}  kubelet            Container image "${p.image}" already present on machine`,
-            `  Normal  Created    ${age(p.createdAt)}  kubelet            Created container ${p.owner ?? p.name}`,
-            `  Normal  Started    ${age(p.createdAt)}  kubelet            Started container ${p.owner ?? p.name}`,
-          ]
-        : [
-            `  Normal   Scheduled  ${age(p.createdAt)}  default-scheduler  Successfully assigned default/${p.name} to ${p.node}`,
-            `  Normal   Pulling    ${age(p.createdAt)}  kubelet            Pulling image "${p.image}"`,
-            `  Warning  Failed     ${age(p.createdAt)}  kubelet            Failed to pull image "${p.image}": rpc error: code = NotFound desc = failed to resolve reference "docker.io/library/${p.image}": not found`,
-            `  Warning  Failed     ${age(p.createdAt)}  kubelet            Error: ErrImagePull`,
-            `  Normal   BackOff    ${age(p.createdAt)}  kubelet            Back-off pulling image "${p.image}"`,
-            `  Warning  Failed     ${age(p.createdAt)}  kubelet            Error: ImagePullBackOff`,
-          ];
-      return [
-        `Name:             ${p.name}`,
-        "Namespace:        default",
-        `Node:             ${p.node}/${NODES.find((n) => n.name === p.node)?.ip}`,
-        `Labels:           ${Object.entries(p.labels).map(([k, v]) => `${k}=${v}`).join(",")}`,
-        `Status:           ${st === "Running" ? "Running" : "Pending"}`,
-        `IP:               ${st === "Running" ? p.ip : ""}`,
-        ...(p.owner ? [`Controlled By:    ReplicaSet/${p.name.split("-").slice(0, -1).join("-")}`] : []),
-        "Containers:",
-        `  ${p.owner ?? p.name}:`,
-        `    Image:          ${p.image}`,
-        `    State:          ${st === "Running" ? "Running" : "Waiting"}`,
-        ...(st !== "Running" ? [`      Reason:       ${st}`] : []),
-        `    Ready:          ${st === "Running"}`,
-        "Events:",
-        "  Type    Reason     Age   From               Message",
-        "  ----    ------     ---   ----               -------",
-        ...events,
-      ].join("\n");
-    }
-    if (res === "deployments") {
-      const d = this.state.deployments.find((x) => x.name === name);
-      if (!d) return `Error from server (NotFound): deployments.apps "${name}" not found`;
-      const ready = this.state.pods.filter((p) => p.owner === d.name && this.podReady(p)).length;
-      return [
-        `Name:                   ${d.name}`,
-        "Namespace:              default",
-        `Selector:               app=${d.name}`,
-        `Replicas:               ${d.replicas} desired | ${d.replicas} updated | ${d.replicas} total | ${ready} available | ${d.replicas - ready} unavailable`,
-        "StrategyType:           RollingUpdate",
-        "RollingUpdateStrategy:  25% max unavailable, 25% max surge",
-        "Pod Template:",
-        `  Labels:  app=${d.name}`,
-        "  Containers:",
-        `   ${d.name}:`,
-        `    Image:  ${d.image}`,
-        "Conditions:",
-        "  Type           Status  Reason",
-        "  ----           ------  ------",
-        `  Available      ${ready === d.replicas ? "True " : "False"}   ${ready === d.replicas ? "MinimumReplicasAvailable" : "MinimumReplicasUnavailable"}`,
-        `  Progressing    True    ${validImage(d.image) ? "NewReplicaSetAvailable" : "ReplicaSetUpdated"}`,
-      ].join("\n");
-    }
-    if (res === "services") {
-      const s = this.state.services.find((x) => x.name === name);
-      if (!s) return `Error from server (NotFound): services "${name}" not found`;
-      const eps = this.state.pods.filter((p) => Object.entries(s.selector).every(([k, v]) => p.labels[k] === v) && this.podReady(p));
-      return [
-        `Name:                     ${s.name}`,
-        `Selector:                 ${Object.entries(s.selector).map(([k, v]) => `${k}=${v}`).join(",")}`,
-        `Type:                     ${s.type}`,
-        `IP:                       ${s.clusterIP}`,
-        `Port:                     <unset>  ${s.port}/TCP`,
-        `TargetPort:               ${s.targetPort}/TCP`,
-        ...(s.nodePort ? [`NodePort:                 <unset>  ${s.nodePort}/TCP`] : []),
-        `Endpoints:                ${eps.map((p) => `${p.ip}:${s.targetPort}`).join(",") || "<none>"}`,
-      ].join("\n");
-    }
-    return `error: the server doesn't have a resource type "${res}"`;
-  }
-
-  // ---------- curl ----------
-  private curl(args: string[]): string {
-    const url = args.find((a) => !a.startsWith("-"));
-    if (!url) return "curl: try 'curl --help' for more information";
-    const m = /^(?:https?:\/\/)?([^:/]+)(?::(\d+))?/.exec(url);
-    const host = m?.[1] ?? "";
-    const port = Number(m?.[2] ?? 80);
-    const refused = `curl: (7) Failed to connect to ${host} port ${port} after 0 ms: Connection refused`;
-
-    const container = this.state.containers.find((c) => c.status === "running" && c.ports?.host === port);
-    if (["localhost", "127.0.0.1"].includes(host) && container) {
-      this.flags.add("curl-docker");
-      return NGINX_HTML;
-    }
-    const svc = this.state.services.find((s) =>
-      ((["localhost", "127.0.0.1", ...NODES.map((n) => n.ip)].includes(host)) && s.nodePort === port) ||
-      ((host === s.clusterIP || host === s.name) && s.port === port));
-    if (!svc) return refused;
-    const eps = this.state.pods.filter((p) => Object.entries(svc.selector).every(([k, v]) => p.labels[k] === v) && this.podReady(p));
-    if (!eps.length) return `curl: (52) Empty reply from server`;
-    this.flags.add(`curl-svc:${svc.name}`);
-    return NGINX_HTML;
-  }
-
-  // ---------- docker ----------
-  private docker(args: string[]): string {
-    const { flags, pos } = parseFlags(args);
-    const [sub, ...rest] = pos;
-    const norm = (i: string) => (i.includes(":") ? i : `${i}:latest`);
-    const pull = (img: string) => {
-      if (!validImage(img)) throw new Error(`Error response from daemon: pull access denied for ${img.split(":")[0]}, repository does not exist or may require 'docker login'`);
-      const tag = norm(img);
-      if (!this.state.images.includes(tag)) this.state.images.push(tag);
-      return tag;
-    };
-    switch (sub) {
-      case "version":
-      case "--version":
-        return "Docker version 27.1.1, build 6312585";
-      case "pull": {
-        if (!rest[0]) return "\"docker pull\" requires exactly 1 argument.";
-        const tag = pull(rest[0]);
-        return `${tag.split(":")[1]}: Pulling from library/${tag.split(":")[0]}\nc6a83fedfae6: Pull complete\n2c3dc6e1b1c3: Pull complete\nDigest: sha256:${hexId()}${hexId()}\nStatus: Downloaded newer image for ${tag}\ndocker.io/library/${tag}`;
-      }
-      case "images":
-        return table([["REPOSITORY", "TAG", "IMAGE ID", "CREATED", "SIZE"], ...this.state.images.map((i) => {
-          const [r, t] = i.split(":");
-          return [r, t, hexId(), "2 weeks ago", r === "nginx" && t.includes("alpine") ? "47.9MB" : "188MB"];
-        })]);
-      case "run": {
-        const image = rest[0];
-        if (!image) return "\"docker run\" requires at least 1 argument.";
-        const note = this.state.images.includes(norm(image)) ? "" : `Unable to find image '${norm(image)}' locally\n`;
-        pull(image);
-        const name = typeof flags.name === "string" ? flags.name : `${["brave", "eager", "quirky"][Math.floor(Math.random() * 3)]}_${["turing", "hopper", "lovelace"][Math.floor(Math.random() * 3)]}`;
-        if (this.state.containers.some((c) => c.name === name)) return `docker: Error response from daemon: Conflict. The container name "/${name}" is already in use.`;
-        let ports: Container["ports"];
-        if (typeof flags.p === "string") {
-          const [h, c] = flags.p.split(":").map(Number);
-          if (this.state.containers.some((x) => x.status === "running" && x.ports?.host === h)) return `docker: Error response from daemon: Bind for 0.0.0.0:${h} failed: port is already allocated.`;
-          ports = { host: h, container: c };
-        }
-        const id = hexId() + hexId();
-        this.state.containers.push({ id, name, image: norm(image), ports, status: "running", createdAt: Date.now() });
-        return note + id + hexId().slice(0, 4);
-      }
-      case "ps": {
-        const list = this.state.containers.filter((c) => flags.a || c.status === "running");
-        return table([["CONTAINER ID", "IMAGE", "COMMAND", "CREATED", "STATUS", "PORTS", "NAMES"], ...list.map((c) => [
-          c.id.slice(0, 12), c.image, "\"/docker-entrypoint.…\"", `${age(c.createdAt)} ago`,
-          c.status === "running" ? `Up ${age(c.createdAt)}` : "Exited (0) 1s ago",
-          c.ports && c.status === "running" ? `0.0.0.0:${c.ports.host}->${c.ports.container}/tcp` : "", c.name,
-        ])]);
-      }
-      case "stop":
-      case "rm": {
-        const c = this.state.containers.find((x) => x.name === rest[0] || x.id.startsWith(rest[0] ?? "-"));
-        if (!c) return `Error response from daemon: No such container: ${rest[0]}`;
-        if (sub === "stop") c.status = "exited";
-        else {
-          if (c.status === "running" && !flags.f) return `Error response from daemon: cannot remove container "/${c.name}": container is running: stop the container before removing or force remove`;
-          this.state.containers = this.state.containers.filter((x) => x !== c);
-        }
-        return rest[0];
-      }
-      case "logs": {
-        const c = this.state.containers.find((x) => x.name === rest[0] || x.id.startsWith(rest[0] ?? "-"));
-        if (!c) return `Error response from daemon: No such container: ${rest[0]}`;
-        return "/docker-entrypoint.sh: Configuration complete; ready for start up\n172.17.0.1 - - \"GET / HTTP/1.1\" 200 615 \"-\" \"curl/8.5.0\"";
-      }
-      default:
-        return `docker: '${sub ?? ""}' is not a docker command.\nSee 'docker --help'`;
-    }
-  }
-
-  // ---------- terraform ----------
-  private terraform(args: string[]): string {
-    const [sub] = args;
-    const tf = this.state.tf;
-    const needInit = "│ Error: Backend initialization required, please run \"terraform init\"";
-    switch (sub) {
-      case "version":
-      case "-version":
-      case "--version":
-        return "Terraform v1.9.5\non linux_amd64\n+ provider registry.terraform.io/hashicorp/aws v5.62.0";
-      case "init":
-        tf.initialized = true;
-        return "Initializing the backend...\nInitializing provider plugins...\n- Finding hashicorp/aws versions matching \"~> 5.0\"...\n- Installing hashicorp/aws v5.62.0...\n- Installed hashicorp/aws v5.62.0 (signed by HashiCorp)\n\nTerraform has been successfully initialized!";
-      case "fmt":
+        return `${HELP_BASE}\n\nFerramentas:\n${allTools().map((t) => `  ${t.name.padEnd(16)} ${t.summary}`).join("\n")}`;
+      case "clear":
+        return { output: "", clear: true };
+      case "true":
+      case "sleep":
+      case "source":
         return "";
-      case "validate":
-        if (!tf.initialized) return needInit;
-        return "Success! The configuration is valid.";
-      case "plan":
-        if (!tf.initialized) return needInit;
-        tf.planned = true;
-        return [
-          "Terraform used the selected providers to generate the following execution plan.",
-          "Resource actions are indicated with the following symbols:",
-          "  + create",
-          "",
-          "Terraform will perform the following actions:",
-          "",
-          "  # aws_vpc.lab will be created",
-          "  + resource \"aws_vpc\" \"lab\" {",
-          "      + cidr_block = \"10.0.0.0/16\"",
-          "      + id         = (known after apply)",
-          "    }",
-          "",
-          "  # aws_eks_cluster.lab will be created",
-          "  + resource \"aws_eks_cluster\" \"lab\" {",
-          "      + name     = \"danylo-lab\"",
-          "      + version  = \"1.30\"",
-          "      + endpoint = (known after apply)",
-          "    }",
-          "",
-          "  # aws_eks_node_group.workers will be created",
-          "  + resource \"aws_eks_node_group\" \"workers\" {",
-          "      + instance_types = [\"t3.medium\"]",
-          "      + scaling_config { desired_size = 2, max_size = 4, min_size = 1 }",
-          "    }",
-          "",
-          "Plan: 3 to add, 0 to change, 0 to destroy.",
-        ].join("\n");
-      case "apply":
-        if (!tf.initialized) return needInit;
-        tf.applied = true;
-        tf.planned = true;
-        return [
-          ...(args.includes("-auto-approve") ? [] : ["Do you want to perform these actions?", "  Enter a value: yes", ""]),
-          "aws_vpc.lab: Creating...",
-          "aws_vpc.lab: Creation complete after 2s [id=vpc-0a1b2c3d4e5f67890]",
-          "aws_eks_cluster.lab: Creating...",
-          "aws_eks_cluster.lab: Still creating... [9m50s elapsed]",
-          "aws_eks_cluster.lab: Creation complete after 9m58s [id=danylo-lab]",
-          "aws_eks_node_group.workers: Creating...",
-          "aws_eks_node_group.workers: Creation complete after 2m11s [id=danylo-lab:workers]",
-          "",
-          "Apply complete! Resources: 3 added, 0 changed, 0 destroyed.",
-          "",
-          "Outputs:",
-          "",
-          "cluster_endpoint = \"https://A1B2C3D4E5.gr7.sa-east-1.eks.amazonaws.com\"",
-          "cluster_name = \"danylo-lab\"",
-        ].join("\n");
-      case "state":
-        if (args[1] !== "list") return "Usage: terraform state list";
-        return tf.applied ? "aws_eks_cluster.lab\naws_eks_node_group.workers\naws_vpc.lab" : "";
-      case "output":
-        return tf.applied ? "cluster_endpoint = \"https://A1B2C3D4E5.gr7.sa-east-1.eks.amazonaws.com\"\ncluster_name = \"danylo-lab\"" : "│ Warning: No outputs found";
-      case "destroy":
-        if (!tf.applied) return "No changes. No objects need to be destroyed.";
-        tf.applied = false;
-        return "aws_eks_node_group.workers: Destroying...\naws_eks_cluster.lab: Destroying...\naws_vpc.lab: Destroying...\n\nDestroy complete! Resources: 3 destroyed.";
+      case "false":
+        return "Error: false";
+      case "pwd":
+        return this.cwd;
+      case "cd": {
+        const target = this.resolve(args[0] ?? "~");
+        if (!this.isDir(target)) return `bash: cd: ${args[0]}: No such file or directory`;
+        this.cwd = target;
+        return "";
+      }
+      case "ls": {
+        const long = args.some((a) => /^-\w*l/.test(a));
+        const all = args.some((a) => /^-\w*a/.test(a));
+        const paths = args.filter((a) => !a.startsWith("-"));
+        const target = paths[0] ?? ".";
+        if (this.readFile(target) !== undefined) return target;
+        if (!this.isDir(target)) return `ls: cannot access '${target}': No such file or directory`;
+        const items = this.listDir(target).filter((n) => all || !n.startsWith("."));
+        if (!long) return items.map((n) => n.replace(/\/$/, "")).join("  ");
+        return [`total ${items.length * 4}`, ...items.map((n) => {
+          const isDir = n.endsWith("/");
+          const size = isDir ? 4096 : (this.readFile(`${target}/${n}`) ?? "").length;
+          return `${isDir ? "drwxr-xr-x" : "-rw-r--r--"} 1 danylo danylo ${String(size).padStart(6)} Sep 23 12:00 ${n.replace(/\/$/, "")}`;
+        })].join("\n");
+      }
+      case "cat": {
+        if (!args.length) return stdin ?? "";
+        return args
+          .map((f) => {
+            if (this.isDir(f) && this.readFile(f) === undefined) return `cat: ${f}: Is a directory`;
+            return this.readFile(f) ?? `cat: ${f}: No such file or directory`;
+          })
+          .join("\n");
+      }
+      case "echo":
+        return args.filter((a) => a !== "-e" && a !== "-n").join(" ");
+      case "touch":
+        for (const f of args) if (this.readFile(f) === undefined) this.writeFile(f, "");
+        return "";
+      case "mkdir":
+        for (const d of args.filter((a) => !a.startsWith("-"))) this.mkdir(d);
+        return "";
+      case "rm": {
+        const targets = args.filter((a) => !a.startsWith("-"));
+        const recursive = args.some((a) => /^-\w*r/i.test(a));
+        const out: string[] = [];
+        for (const t of targets) {
+          if (this.isDir(t) && this.readFile(t) === undefined && !recursive) out.push(`rm: cannot remove '${t}': Is a directory`);
+          else if (!this.removePath(t) && !args.some((a) => /^-\w*f/.test(a))) out.push(`rm: cannot remove '${t}': No such file or directory`);
+        }
+        return out.join("\n");
+      }
+      case "cp":
+      case "mv": {
+        const [src, dst] = args.filter((a) => !a.startsWith("-"));
+        const content = this.readFile(src ?? "");
+        if (content === undefined) return `${cmd}: cannot stat '${src}': No such file or directory`;
+        const target = this.isDir(dst) ? `${dst}/${src.split("/").pop()}` : dst;
+        this.writeFile(target, content);
+        if (cmd === "mv") this.removePath(src);
+        return "";
+      }
+      case "sed": {
+        const inPlace = args.includes("-i");
+        const rest = args.filter((a) => a !== "-i" && a !== "-e");
+        const expr = rest[0] ?? "";
+        const m = /^s(.)(.*?)\1(.*?)\1(g?)$/.exec(expr);
+        if (!m) return `sed: -e expression #1, char ${expr.length}: unknown command`;
+        const re = new RegExp(m[2], m[4] ? "g" : "");
+        const file = rest[1];
+        const content = file ? this.readFile(file) : stdin;
+        if (content === undefined) return `sed: can't read ${file}: No such file or directory`;
+        const result = content.split("\n").map((l) => l.replace(re, m[3])).join("\n");
+        if (inPlace && file) {
+          this.writeFile(file, result);
+          return "";
+        }
+        return result;
+      }
+      case "grep": {
+        const opts = args.filter((a) => /^-[a-zA-Z]+$/.test(a)).join("");
+        const rest = args.filter((a) => !/^-[a-zA-Z]+$/.test(a) && !/^-[AB]\d+$/.test(a));
+        const pattern = rest[0];
+        if (pattern === undefined) return "Usage: grep [OPTION]... PATTERNS [FILE]...";
+        const files = rest.slice(1);
+        if (files.some((f) => this.readFile(f) === undefined)) return `grep: ${files.find((f) => this.readFile(f) === undefined)}: No such file or directory`;
+        let re: RegExp;
+        try {
+          re = new RegExp(opts.includes("F") ? pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : pattern, opts.includes("i") ? "i" : "");
+        } catch {
+          re = new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+        }
+        const lines = inputOf(files).split("\n");
+        const hits = lines.map((l, i) => ({ l, i })).filter(({ l }) => re.test(l) !== opts.includes("v"));
+        if (opts.includes("c")) return String(hits.length);
+        const after = Number(args.find((a) => /^-A\d+$/.test(a))?.slice(2) ?? 0);
+        const before = Number(args.find((a) => /^-B\d+$/.test(a))?.slice(2) ?? 0);
+        if (after || before) {
+          const keep = new Set<number>();
+          hits.forEach(({ i }) => {
+            for (let k = i - before; k <= i + after; k++) keep.add(k);
+          });
+          return [...keep].filter((k) => k >= 0 && k < lines.length).sort((a, b) => a - b).map((k) => lines[k]).join("\n");
+        }
+        return hits.map(({ l, i }) => (opts.includes("n") ? `${i + 1}:${l}` : l)).join("\n");
+      }
+      case "head":
+      case "tail": {
+        const nArg = args.find((a) => /^-n?\d+$/.test(a)) ?? (args.includes("-n") ? args[args.indexOf("-n") + 1] : undefined);
+        const n = Number((nArg ?? "10").replace(/^-n?/, "")) || 10;
+        const files = args.filter((a) => !a.startsWith("-") && a !== nArg);
+        const lines = inputOf(files).split("\n");
+        return (cmd === "head" ? lines.slice(0, n) : lines.slice(-n)).join("\n");
+      }
+      case "wc": {
+        const text = inputOf(args.filter((a) => !a.startsWith("-")));
+        const lines = text ? text.split("\n").length : 0;
+        return args.includes("-l") ? String(lines) : `${lines} ${text.split(/\s+/).filter(Boolean).length} ${text.length}`;
+      }
+      case "sort":
+        return inputOf(args.filter((a) => !a.startsWith("-"))).split("\n").sort().join("\n");
+      case "uniq":
+        return inputOf(args).split("\n").filter((l, i, a) => l !== a[i - 1]).join("\n");
+      case "base64": {
+        const decode = args.includes("-d") || args.includes("--decode");
+        const text = (inputOf(args.filter((a) => !a.startsWith("-"))) ?? "").trim();
+        try {
+          return decode ? atob(text) : btoa(text);
+        } catch {
+          return "base64: invalid input";
+        }
+      }
+      case "tee": {
+        const file = args.find((a) => !a.startsWith("-"));
+        if (file) this.writeFile(file, (args.includes("-a") ? (this.readFile(file) ?? "") : "") + (stdin ?? ""));
+        return stdin ?? "";
+      }
+      case "whoami":
+        return "danylo";
+      case "id":
+        return "uid=1000(danylo) gid=1000(danylo) groups=1000(danylo),27(sudo),999(docker)";
+      case "hostname":
+        return this.host;
+      case "date":
+        return new Date().toString();
+      case "uname":
+        return args.includes("-a") ? `Linux ${this.host} 6.8.0-45-generic #45-Ubuntu SMP x86_64 GNU/Linux` : "Linux";
+      case "history":
+        return this.log.map((l, i) => `${String(i + 1).padStart(4)}  ${l}`).join("\n");
+      case "export":
+      case "alias": {
+        const joined = args.join(" ");
+        const m = /^(\w[\w-]*)=(.*)$/.exec(joined);
+        if (!m) return cmd === "alias" ? Object.entries(this.aliases).map(([k, v]) => `alias ${k}='${v}'`).join("\n") : Object.entries(this.env).map(([k, v]) => `declare -x ${k}="${v}"`).join("\n");
+        const value = m[2].replace(/^["']|["']$/g, "");
+        if (cmd === "alias") this.aliases[m[1]] = value;
+        else this.env[m[1]] = value;
+        return "";
+      }
+      case "unset":
+        for (const a of args) delete this.env[a];
+        return "";
+      case "env":
+      case "printenv":
+        return args[0] ? env[args[0]] ?? "" : Object.entries(env).map(([k, v]) => `${k}=${v}`).join("\n");
+      case "which": {
+        const t = args[0];
+        return getTool(t) || BUILTINS.includes(t) ? `/usr/local/bin/${t}` : "";
+      }
+      case "exit":
+      case "logout":
+        if (this.host !== this.homeHost) {
+          const from = this.host;
+          this.host = this.homeHost;
+          this.cwd = PROJECT;
+          return `logout\nConnection to ${from} closed.`;
+        }
+        return "logout (sessão principal — use o botão ↺ para reiniciar o ambiente)";
+      case "ssh": {
+        const target = args.filter((a) => !a.startsWith("-")).pop()?.split("@").pop();
+        if (!target) return "usage: ssh [-i identity_file] [user@]hostname";
+        if (!this.state.hosts[target]) return `ssh: Could not resolve hostname ${target}: Name or service not known`;
+        this.host = target;
+        this.cwd = HOME;
+        return `Welcome to Ubuntu 24.04 LTS (GNU/Linux 6.8.0-45-generic x86_64)\nLast login: ${new Date().toUTCString()} from 172.18.0.1`;
+      }
+      case "systemctl":
+        return this.systemctl(args);
+      case "journalctl": {
+        const unit = args.includes("-u") ? args[args.indexOf("-u") + 1] : args.find((a) => a.startsWith("--unit="))?.split("=")[1];
+        const svc = unit ? this.hostOf().services[unit.replace(/\.service$/, "")] : undefined;
+        if (!unit || !svc) return "-- No entries --";
+        const lines = svc.logs.length ? svc.logs : [`${unit}[1042]: started successfully`];
+        const nArg = args.includes("-n") ? Number(args[args.indexOf("-n") + 1]) : lines.length;
+        return lines.slice(-nArg).map((l) => `Sep 23 12:00:${String(Math.floor(Math.random() * 60)).padStart(2, "0")} ${this.host} ${l}`).join("\n");
+      }
+      case "apt-get":
+      case "apt":
+        return this.apt(args);
+      case "apt-mark":
+        return args.slice(1).map((p) => `${p} ${args[0] === "hold" ? "set on hold" : "was already not on hold"}.`).join("\n");
+      case "apt-cache": {
+        const pkg = args[args.length - 1];
+        return ["1.31.1-1.1", "1.31.0-1.1", "1.30.2-1.1", "1.30.0-1.1"].map((v) => `   ${pkg} | ${v} | https://pkgs.k8s.io/core:/stable:/v${v.slice(0, 4)}/deb  Packages`).join("\n");
+      }
+      case "vi":
+      case "vim":
+      case "nano": {
+        const file = args.find((a) => !a.startsWith("-"));
+        if (!file) return `${cmd}: informe um arquivo, ex.: ${cmd} deployment.yaml`;
+        const path = this.resolve(file);
+        return { output: "", edit: { path, content: this.state.files[path] ?? "" } };
+      }
+      case "watch":
+        return this.exec(args.filter((a) => !a.startsWith("-") && !/^\d+$/.test(a)).join(" ")).output;
+      case "curl":
+      case "wget":
+        return this.http(cmd, args);
       default:
-        return "Usage: terraform [global options] <subcommand> [args]\n\nMain commands:\n  init, validate, plan, apply, destroy, output, state list";
+        return null;
     }
+  }
+
+  private systemctl(args: string[]): string {
+    const [action, unitArg] = args.filter((a) => !a.startsWith("-"));
+    const host = this.hostOf();
+    if (action === "daemon-reload") return "";
+    if (action === "list-units")
+      return Object.entries(host.services).map(([n, s]) => `${(n + ".service").padEnd(24)} loaded ${s.active ? "active   running" : "failed   failed "} ${n}`).join("\n");
+    if (!unitArg) return `Too few arguments.`;
+    const name = unitArg.replace(/\.service$/, "");
+    const svc: ServiceUnit | undefined = host.services[name];
+    if (!svc) return `Failed to ${action} ${name}.service: Unit ${name}.service not found.`;
+    const failed = `Job for ${name}.service failed because the control process exited with error code.\nSee "systemctl status ${name}.service" and "journalctl -xeu ${name}.service" for details.`;
+    const setActive = (v: boolean) => {
+      svc.active = v;
+      svc.logs.push(`systemd[1]: ${v ? "Started" : "Stopped"} ${name}.service.`);
+      if (name === "kubelet" && v) {
+        const node = this.state.nodes.find((n) => n.name === host.name);
+        if (node && host.packages.kubelet) node.version = `v${host.packages.kubelet.split("-")[0]}`;
+      }
+    };
+    switch (action) {
+      case "start":
+      case "restart":
+      case "reload":
+        if (svc.failReason) {
+          svc.logs.push(svc.failReason);
+          return failed;
+        }
+        setActive(true);
+        return "";
+      case "stop":
+        setActive(false);
+        return "";
+      case "enable":
+        svc.enabled = true;
+        if (args.includes("--now") && !svc.failReason) setActive(true);
+        return `Created symlink /etc/systemd/system/multi-user.target.wants/${name}.service → /lib/systemd/system/${name}.service.`;
+      case "disable":
+        svc.enabled = false;
+        return `Removed /etc/systemd/system/multi-user.target.wants/${name}.service.`;
+      case "is-active":
+        return svc.active ? "active" : "inactive";
+      case "is-enabled":
+        return svc.enabled ? "enabled" : "disabled";
+      case "status":
+        return [
+          `${svc.active ? "●" : "○"} ${name}.service - ${name}`,
+          `     Loaded: loaded (/lib/systemd/system/${name}.service; ${svc.enabled ? "enabled" : "disabled"}; preset: enabled)`,
+          `     Active: ${svc.active ? "active (running)" : svc.failReason ? "activating (auto-restart) (Result: exit-code)" : "inactive (dead)"} since ${new Date().toUTCString()}`,
+          ...(svc.failReason ? [`    Process: 2211 ExecStart=/usr/bin/${name} (code=exited, status=1/FAILURE)`] : []),
+          ...svc.logs.slice(-3).map((l) => `${new Date().toTimeString().slice(0, 8)} ${host.name} ${l}`),
+        ].join("\n");
+      default:
+        return `Unknown command verb ${action}.`;
+    }
+  }
+
+  private apt(args: string[]): string {
+    const action = args.find((a) => !a.startsWith("-"));
+    const host = this.hostOf();
+    if (action === "update") return "Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease\nGet:2 https://pkgs.k8s.io/core:/stable:/v1.31/deb  InRelease [1186 B]\nReading package lists... Done";
+    if (action === "install" || action === "upgrade") {
+      const pkgs = args.filter((a) => !a.startsWith("-") && a !== action);
+      const lines = ["Reading package lists... Done", "Building dependency tree... Done"];
+      for (const p of pkgs) {
+        const [name, ver] = p.replace(/['"]/g, "").split("=");
+        const version = ver ?? host.packages[name] ?? "latest";
+        const prev = host.packages[name];
+        host.packages[name] = version;
+        lines.push(prev ? `Preparing to unpack .../${name}_${version}_amd64.deb ...\nUnpacking ${name} (${version}) over (${prev}) ...` : `Setting up ${name} (${version}) ...`);
+        if (!host.services[name] && ["nginx", "apache2", "docker.io", "containerd", "redis-server", "postgresql"].includes(name))
+          host.services[name] = { active: true, enabled: true, logs: [] };
+      }
+      return lines.join("\n");
+    }
+    return `E: Invalid operation ${action}`;
+  }
+
+  // ---------- curl / wget ----------
+  private http(cmd: string, args: string[]): string {
+    const url = args.find((a) => !a.startsWith("-") && !/^\d+$/.test(a));
+    if (!url) return `${cmd}: try '${cmd} --help' for more information`;
+    const m = /^(?:(https?):\/\/)?([^:/]+)(?::(\d+))?(\/.*)?$/.exec(url);
+    const host = m?.[2] ?? "";
+    const port = Number(m?.[3] ?? (m?.[1] === "https" ? 443 : 80));
+    const path = m?.[4] ?? "/";
+    for (const t of allTools()) {
+      const r = t.http?.({ host, port, path }, this);
+      if (r != null) return r;
+    }
+    return cmd === "curl"
+      ? `curl: (7) Failed to connect to ${host} port ${port} after 0 ms: Connection refused`
+      : `wget: can't connect to remote host (${host}): Connection refused`;
   }
 }
 
-export const COMMANDS = ["kubectl", "docker", "terraform", "curl", "ls", "cat", "clear", "help", "history", "echo", "whoami", "pwd"];
-export const KUBECTL_SUBS = ["get", "describe", "create", "run", "expose", "scale", "set", "rollout", "delete", "logs", "apply", "top", "version", "cluster-info", "config"];
-
-const HELP = `Comandos disponíveis neste lab:
-  kubectl    get | describe | create | run | expose | scale | set image | rollout | delete | logs | apply | top
-  docker     pull | images | run | ps | stop | rm | logs
-  terraform  init | validate | plan | apply | state list | output | destroy
-  curl       testar serviços HTTP (NodePort, ClusterIP, portas do Docker)
-  ls, cat, echo, history, clear, whoami, pwd
-
-Atalhos: ↑/↓ histórico · Tab autocompletar · Ctrl+L limpar`;
+export { HOME, PROJECT };
