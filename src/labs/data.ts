@@ -5,10 +5,11 @@ import * as cka from "./tracks/cka";
 import * as ckad from "./tracks/ckad";
 import * as docker from "./tracks/docker";
 import * as terraform from "./tracks/terraform";
+import * as cicd from "./tracks/cicd";
 
 export type { Lab, Lesson, Step, Track };
 
-const MODULES: { track: Track; labs: Lab[]; lessons?: Lesson[] }[] = [kubernetes, cka, ckad, docker, terraform];
+const MODULES: { track: Track; labs: Lab[]; lessons?: Lesson[] }[] = [kubernetes, cka, ckad, docker, terraform, cicd];
 
 export const TRACKS: Track[] = MODULES.map((m) => m.track);
 export const LABS: Lab[] = MODULES.flatMap((m) => m.labs);
