@@ -39,6 +39,10 @@ export type Container = {
   createdAt: number;
 };
 
+export type Entry = { cmd: string; output: string; ok: boolean };
+
+const ERROR_OUT = /(^|\n)(error|Error|bash:|docker: |curl: \(|cat: |\u2502 Error|"docker \w+" requires)/;
+
 export type LabState = {
   pods: Pod[];
   deployments: Deployment[];
@@ -133,6 +137,7 @@ const DEFAULT_FILES: Record<string, string> = {
 export class Shell {
   state: LabState;
   log: string[] = [];
+  entries: Entry[] = [];
   flags = new Set<string>();
   private ipSeq = 10;
 
@@ -216,7 +221,7 @@ export class Shell {
     let ok = true;
     try {
       switch (cmd) {
-        case "clear": this.log.push(trimmed); return { output: "", clear: true };
+        case "clear": this.log.push(trimmed); this.entries.push({ cmd: trimmed, output: "", ok: true }); return { output: "", clear: true };
         case "help": output = HELP; break;
         case "kubectl": case "k": output = this.kubectl(args); break;
         case "docker": output = this.docker(args); break;
@@ -238,7 +243,9 @@ export class Shell {
       output = (e as Error).message;
       ok = false;
     }
-    if (ok && !/^(error|Error|bash:)/.test(output)) this.log.push(trimmed);
+    ok = ok && !ERROR_OUT.test(output);
+    if (ok) this.log.push(trimmed);
+    this.entries.push({ cmd: trimmed, output, ok });
     return { output };
   }
 
