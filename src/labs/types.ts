@@ -232,3 +232,37 @@ export type Track = {
   /** e.g. "Certificação" for CKA/CKAD */
   badge?: string;
 };
+
+// ---------------- Lessons (theory before the labs, like LabEx/KodeKloud) ----------------
+export type LessonBlock =
+  /** Paragraph. Supports **bold** and `inline code`. */
+  | { type: "text"; text: string }
+  | { type: "heading"; text: string }
+  | { type: "list"; items: string[] }
+  | { type: "code"; code: string; lang?: string; caption?: string }
+  /** tip = boa prática, warn = armadilha comum, exam = dica de prova/entrevista */
+  | { type: "callout"; tone: "tip" | "warn" | "exam"; text: string }
+  /** Simple left-to-right flow: each item becomes a box connected by arrows. */
+  | { type: "flow"; steps: { label: string; detail?: string }[]; caption?: string }
+  | { type: "table"; head: string[]; rows: string[][] };
+
+export type QuizQuestion = {
+  q: string;
+  options: string[];
+  /** index of the correct option */
+  answer: number;
+  /** shown after answering (why the right answer is right) */
+  explain: string;
+};
+
+export type Lesson = {
+  id: string; // globally unique, e.g. "learn-k8s-pods"
+  track: string;
+  title: string;
+  summary: string;
+  minutes: number;
+  /** id of the lab this lesson prepares for — the lesson is listed right before it */
+  before?: string;
+  blocks: LessonBlock[];
+  quiz: QuizQuestion[];
+};

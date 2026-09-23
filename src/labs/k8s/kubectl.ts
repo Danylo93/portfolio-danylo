@@ -252,10 +252,30 @@ const podHttp = (sh: Shell, from: Pod | null, host: string, port: number, tool: 
   }
   if (!t.pods.length) return tool === "wget" ? `wget: can't connect to remote host (${host}): Connection refused` : `curl: (7) Failed to connect to ${host} port ${port}: Connection refused`;
   const target = t.pods[Math.floor(Math.random() * t.pods.length)];
-  if (!trafficAllowed(sh, from, target, t.port)) return tool === "wget" ? "wget: download timed out" : `curl: (28) Connection timed out after 5001 milliseconds`;
+  if (!trafficAllowed(sh, from, target, t.port)) {
+    sh.flags.add(`blocked-from:${from?.name ?? "host"}:${t.svc?.name ?? target.name}`);
+    return tool === "wget" ? "wget: download timed out" : `curl: (28) Connection timed out after 5001 milliseconds`;
+  }
   if (t.svc) sh.flags.add(`reach:${t.svc.namespace}/${t.svc.name}`);
   if (from) sh.flags.add(`reach-from:${from.name}:${t.svc?.name ?? target.name}`);
   return responseOf(target, t.port);
+};
+
+const ephemeral = (sh: Shell, pod: Pod) => {
+  const all = sh.ext("podFs", () => ({}) as Record<string, Record<string, string>>);
+  return (all[`${pod.namespace}/${pod.name}@${pod.createdAt}`] ??= {});
+};
+
+const writeInPod = (sh: Shell, pod: Pod, c: Container, path: string, content: string, append: boolean): string | null => {
+  const vol = volumeFor(sh, pod, c, path);
+  if (vol) {
+    vol.store[vol.rel] = (append ? vol.store[vol.rel] ?? "" : "") + content + "\n";
+    return null;
+  }
+  if (c.securityContext?.readOnlyRootFilesystem) return `sh: can't create ${path}: Read-only file system`;
+  const fs = ephemeral(sh, pod);
+  fs[path] = (append ? fs[path] ?? "" : "") + content + "\n";
+  return null;
 };
 
 const podExec = (sh: Shell, pod: Pod, c: Container, argv: string[]): string => {
@@ -271,7 +291,20 @@ const podExec = (sh: Shell, pod: Pod, c: Container, argv: string[]): string => {
     case "sh":
     case "bash":
     case "ash":
-      if (a[0] === "-c") return a.slice(1).join(" ").split(/\s*(?:&&|;)\s*/).map((part) => podExec(sh, pod, c, part.match(/"[^"]*"|'[^']*'|\S+/g)?.map((x) => x.replace(/^["']|["']$/g, "")) ?? [])).join("\n");
+      if (a[0] === "-c")
+        return a
+          .slice(1)
+          .join(" ")
+          .split(/\s*(?:&&|;)\s*/)
+          .map((part) => {
+            const redir = /^(.*?)\s*(>>?)\s*(\S+)$/.exec(part);
+            const cmdPart = redir ? redir[1] : part;
+            const out = podExec(sh, pod, c, cmdPart.match(/"[^"]*"|'[^']*'|\S+/g)?.map((x) => x.replace(/^["']|["']$/g, "")) ?? []);
+            if (!redir) return out;
+            return writeInPod(sh, pod, c, redir[3], out, redir[2] === ">>") ?? "";
+          })
+          .filter(Boolean)
+          .join("\n");
       return "";
     case "env":
     case "printenv":
@@ -281,7 +314,13 @@ const podExec = (sh: Shell, pod: Pod, c: Container, argv: string[]): string => {
     case "cat": {
       const p = a[0];
       const vol = volumeFor(sh, pod, c, p);
-      if (vol && vol.rel in vol.store) return vol.store[vol.rel];
+      if (vol && vol.rel in vol.store) {
+        const claim = c.volumeMounts?.map((m) => pod.spec.volumes?.find((v) => v.name === m.name && p.startsWith(m.mountPath + "/"))).find(Boolean)?.persistentVolumeClaim?.claimName;
+        if (claim) sh.flags.add(`pvc-read:${claim}`);
+        return vol.store[vol.rel].replace(/\n$/, "");
+      }
+      const eph = ephemeral(sh, pod);
+      if (p in eph) return eph[p].replace(/\n$/, "");
       return p in files ? files[p] : exit(`cat: can't open '${p}': No such file or directory`);
     }
     case "ls": {
@@ -347,7 +386,15 @@ const podLogs = (sh: Shell, pod: Pod, c: Container, previous: boolean) => {
   if (["ContainerCreating", "Pending", "ErrImagePull", "ImagePullBackOff", "CreateContainerConfigError"].includes(st) || st.startsWith("Init"))
     return `Error from server (BadRequest): container "${c.name}" in pod "${pod.name}" is waiting to start: ${st === "ImagePullBackOff" || st === "ErrImagePull" ? "trying and failing to pull image" : st}`;
   const cl = [...(c.command ?? []), ...(c.args ?? [])].join(" ");
-  const echoes = [...cl.matchAll(/echo\s+("[^"]*"|'[^']*'|[^;&|]+)/g)].map((m) => m[1].trim().replace(/^["']|["']$/g, ""));
+  const tailed = /tail\s+(?:-\w+\s+)*-?f\s+(\S+)/.exec(cl)?.[1] ?? /tail\s+-F\s+(\S+)/.exec(cl)?.[1];
+  if (tailed) {
+    const writer = pod.spec.containers.find((x) => x !== c && [...(x.command ?? []), ...(x.args ?? [])].join(" ").includes(tailed.split("/").pop()!));
+    if (!writer) return "";
+    return podLogs(sh, pod, { ...writer, command: [...(writer.command ?? []), ...(writer.args ?? [])].map((x) => x.replace(/\s*>>?\s*\S+/g, "")), args: [] }, previous);
+  }
+  // only echoes that go to stdout (not redirected to a file)
+  const stdoutParts = cl.split(/;|&&|\|\|/).filter((part) => !/>\s*\S/.test(part.replace(/"[^"]*"|'[^']*'/g, "")));
+  const echoes = stdoutParts.flatMap((part) => [...part.matchAll(/echo\s+("[^"]*"|'[^']*'|[^;&|>]+)/g)].map((m) => m[1].trim().replace(/^["']|["']$/g, "")));
   if (/while true|while :/.test(cl) && echoes.length) {
     const n = Math.min(8, Math.max(1, Math.floor((Date.now() - (pod.scheduledAt ?? pod.createdAt)) / 5000)));
     return Array.from({ length: n }, () => echoes.map((e) => e.replace(/\$\(date\)/, new Date().toUTCString())).join("\n")).join("\n");
@@ -399,7 +446,7 @@ const listRows = (sh: Shell, kind: string, ns: string | null, wide: boolean, sel
           ns: p.namespace,
           labels: p.labels,
           manifest: podManifest(sh, p),
-          cells: [p.name, readyCount(sh, p), st, restarts ? `${restarts} (${Math.max(5, restarts * 12)}s ago)` : "0", age(p.createdAt), ...(wide ? [st === "Running" || p.ownerKind ? p.ip : "<none>", p.node ?? "<none>", "<none>", "<none>"] : [])],
+          cells: [p.name, readyCount(sh, p), st, restarts ? `${restarts} (${age(Date.now() - Math.min(Date.now() - (p.scheduledAt ?? p.createdAt), 20_000 + (restarts % 9) * 30_000))} ago)` : "0", age(p.createdAt), ...(wide ? [st === "Running" || p.ownerKind ? p.ip : "<none>", p.node ?? "<none>", "<none>", "<none>"] : [])],
         };
       });
       return { head, rows };
@@ -1207,7 +1254,7 @@ const create = (sh: Shell, p: string[], flags: Flags, rest: string[], args: stri
       }
       return emit("ConfigMap", { data }, () => exists("ConfigMap") ?? (upsertObj(sh, { kind: "ConfigMap", name, namespace: ns, manifest: { data } }), `configmap/${name} created`));
     }
-    case "secret": {
+    case "Secret": {
       const [, type, sname] = p;
       if (type !== "generic" && type !== "tls" && type !== "docker-registry") return `error: unknown secret type "${type}" — use: kubectl create secret generic <nome> --from-literal=chave=valor`;
       if (!sname) return "error: exactly one NAME is required, got 0";

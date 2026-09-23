@@ -113,3 +113,18 @@ describe("devsecops", () => {
 
 Run: `npx vitest run src/labs/tracks/<track>.test.ts`, `npx tsc --noEmit -p tsconfig.app.json`,
 `npx eslint src/labs`.
+
+## Lessons
+
+Every track also has 3–5 short theory lessons (`Lesson` in types.ts), exported as
+`export const lessons: Lesson[]` from the track module. A lesson has `before: "<lab id>"` so the
+catalog shows it right before the lab it prepares for, like the LabEx/KodeKloud learning paths.
+
+- 4–8 minutes of reading, pt-BR, written for a Senior Infrastructure/SRE audience (no fluff).
+- Blocks: `heading`, `text` (supports **bold** and `inline code`), `list`, `code` (real config or
+  commands), `callout` (tone tip | warn | exam), `flow` (a left-to-right diagram of 3–6 steps),
+  `table`.
+- Include at least one `flow` or `table` and one `callout` per lesson.
+- `quiz`: 3 questions with 3–4 options, `answer` = correct index, `explain` = why. Make the wrong
+  options plausible (typical misconceptions), not silly.
+- Test with `expectLessonWellFormed(lesson)` from test-utils.

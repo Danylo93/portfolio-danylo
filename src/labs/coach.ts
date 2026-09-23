@@ -180,12 +180,14 @@ const expectedHead = (step: Step) =>
   (step.code ?? []).map((c) => c.split(/\s+/).slice(0, 2).join(" "));
 
 /** Live reaction after each command, shown in the mentor feed. */
-export const react = (e: Entry, step: Step | null, sh: Shell): CoachMsg | null => {
+export const react = (e: Entry, step: Step | null, sh: Shell, alreadyAnnounced = false): CoachMsg | null => {
   if (!e.ok) {
     const why = explainError(e, sh);
     return why ? { tone: "error", text: why } : null;
   }
-  if (step?.check(sh)) return { tone: "success", text: "Isso cumpre o passo! Clique em Verificar para confirmar e ver a explicação." };
+  const passes = !!step?.check(sh);
+  if (passes && !alreadyAnnounced) return { tone: "success", text: "Isso cumpre o passo! Clique em Verificar para confirmar e ver a explicação." };
+  if (passes) return observe(e) ? { tone: "info", text: observe(e)! } : null;
   const obs = observe(e);
   if (obs) return { tone: "info", text: obs };
   if (step && e.cmd !== "clear" && e.cmd !== "help") {

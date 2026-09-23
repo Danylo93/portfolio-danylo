@@ -281,7 +281,8 @@ export const podStatus = (sh: Shell, p: Pod): string => {
 export const podRestarts = (sh: Shell, p: Pod) => {
   const since = Date.now() - (p.scheduledAt ?? p.createdAt);
   const st = podStatus(sh, p);
-  if (st === "CrashLoopBackOff" || st === "Error") return Math.max(1, Math.floor(since / 15000) + (st === "CrashLoopBackOff" ? 1 : 0));
+  // back-off grows to 5 minutes, so restarts grow fast at first and slowly afterwards
+  if (st === "CrashLoopBackOff" || st === "Error") return Math.max(1, Math.min(Math.floor(since / 15000) + (st === "CrashLoopBackOff" ? 1 : 0), 6 + Math.floor(since / 300000)));
   if (st === "Running" && p.spec.containers.some((c) => !probeResult(c, c.livenessProbe).ok)) return Math.floor(since / 12000);
   return p.restarts;
 };
@@ -459,6 +460,12 @@ export const pvcStatus = (sh: Shell, name: string, ns = "default"): { status: st
 
 // ---------- RBAC ----------
 type Rule = { verbs: string[]; resources: string[] };
+const BUILTIN_CLUSTER_ROLES: Record<string, Rule[]> = {
+  "cluster-admin": [{ verbs: ["*"], resources: ["*"] }],
+  admin: [{ verbs: ["*"], resources: ["*"] }],
+  edit: [{ verbs: ["get", "list", "watch", "create", "update", "patch", "delete"], resources: ["*"] }],
+  view: [{ verbs: ["get", "list", "watch"], resources: ["*"] }],
+};
 const rulesOf = (o?: K8sObject): Rule[] => (o?.manifest.rules ?? []).map((r: Rule) => ({ verbs: r.verbs ?? [], resources: r.resources ?? [] }));
 
 export const can = (sh: Shell, subject: string | undefined, verb: string, resource: string, ns = "default"): boolean => {
@@ -476,7 +483,8 @@ export const can = (sh: Shell, subject: string | undefined, verb: string, resour
   return bindings.some((b) => {
     const ref = b.manifest.roleRef ?? {};
     const role = ref.kind === "ClusterRole" ? findObj(sh, "ClusterRole", ref.name) : findObj(sh, "Role", ref.name, b.namespace);
-    return rulesOf(role).some(
+    const rules = role ? rulesOf(role) : ref.kind === "ClusterRole" ? BUILTIN_CLUSTER_ROLES[ref.name] ?? [] : [];
+    return rules.some(
       (r) => (r.verbs.includes("*") || r.verbs.includes(verb)) && (r.resources.includes("*") || r.resources.includes(res) || r.resources.includes(res.replace(/s$/, ""))),
     );
   });

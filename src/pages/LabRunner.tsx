@@ -43,6 +43,7 @@ const LabRunner = () => {
   const [stats, setStats] = useState({ hints: 0, misses: 0 });
   const stepStart = useRef(0);
   const idle = useRef(0);
+  const announced = useRef(false);
 
   useEffect(() => {
     setStep(-1);
@@ -70,6 +71,7 @@ const LabRunner = () => {
     setFeed([]);
     setExplainOpen(null);
     idle.current = 0;
+    announced.current = false;
     stepStart.current = shell?.entries.length ?? 0;
   }, [step, shell]);
 
@@ -90,7 +92,8 @@ const LabRunner = () => {
     idle.current = 0;
     const entry = shell.entries[shell.entries.length - 1];
     if (!entry || solved) return;
-    const msg = react(entry, current, shell);
+    const msg = react(entry, current, shell, announced.current);
+    if (msg?.tone === "success") announced.current = true;
     if (msg) setFeed((f) => [...f.slice(-5), msg]);
   };
 
@@ -284,14 +287,14 @@ const LabRunner = () => {
                               <div className={`font-mono text-[10px] uppercase tracking-wider mb-1 ${isSolution ? "text-primary" : "text-yellow-400"}`}>
                                 {isSolution ? `Solução · dica ${i + 1} de ${current.hints.length}` : `Dica ${i + 1} de ${current.hints.length}`}
                               </div>
-                              {isSolution && !/[(<—&]|troque|depois/.test(h) ? (
+                              {isSolution && !/[(<—&\n]|troque|depois/.test(h) ? (
                                 <button onClick={() => pasteCode(h)} className="font-mono text-green-300 text-left break-all hover:underline" title="Clique para colar no terminal">
                                   $ {h}
                                 </button>
                               ) : isSolution ? (
-                                <p className="font-mono text-green-300 break-all">$ {h}</p>
+                                <p className="font-mono text-green-300 break-all whitespace-pre-wrap">{h.includes("\n") ? h : `$ ${h}`}</p>
                               ) : (
-                                <p className="text-yellow-100/90 leading-relaxed">{h}</p>
+                                <p className="text-yellow-100/90 leading-relaxed whitespace-pre-wrap">{h}</p>
                               )}
                             </motion.div>
                           );

@@ -243,6 +243,7 @@ export class Shell {
 
   /** Called by the terminal editor when the user saves. */
   saveEdit(path: string, content: string): string {
+    tick(this);
     const hook = this.editHooks.get(path);
     let output: string;
     let ok = true;
@@ -256,6 +257,7 @@ export class Shell {
       output = `"${path}" ${content.split("\n").length}L, ${content.length}B written`;
     }
     const cmd = `:wq ${path}`;
+    tick(this);
     if (ok) this.log.push(cmd);
     this.entries.push({ cmd, output, ok });
     return output;

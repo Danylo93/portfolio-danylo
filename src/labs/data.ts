@@ -1,15 +1,32 @@
 // Aggregates all tracks and labs. Importing a track registers the CLI tools it needs.
-import type { Lab, Step, Track } from "./types";
+import type { Lab, Lesson, Step, Track } from "./types";
 import * as kubernetes from "./tracks/kubernetes";
+import * as cka from "./tracks/cka";
+import * as ckad from "./tracks/ckad";
 import * as docker from "./tracks/docker";
 import * as terraform from "./tracks/terraform";
 
-export type { Lab, Step, Track };
+export type { Lab, Lesson, Step, Track };
 
-const MODULES: { track: Track; labs: Lab[] }[] = [kubernetes, docker, terraform];
+const MODULES: { track: Track; labs: Lab[]; lessons?: Lesson[] }[] = [kubernetes, cka, ckad, docker, terraform];
 
 export const TRACKS: Track[] = MODULES.map((m) => m.track);
 export const LABS: Lab[] = MODULES.flatMap((m) => m.labs);
+export const LESSONS: Lesson[] = MODULES.flatMap((m) => m.lessons ?? []);
+
+/** Learning path of a track: each lesson right before the lab it prepares for, leftovers at the start. */
+export const pathOf = (trackId: string): ({ kind: "lesson"; item: Lesson } | { kind: "lab"; item: Lab })[] => {
+  const labs = LABS.filter((l) => l.track === trackId);
+  const lessons = LESSONS.filter((l) => l.track === trackId);
+  const out: ({ kind: "lesson"; item: Lesson } | { kind: "lab"; item: Lab })[] = lessons
+    .filter((l) => !l.before || !labs.some((x) => x.id === l.before))
+    .map((item) => ({ kind: "lesson" as const, item }));
+  for (const lab of labs) {
+    for (const item of lessons.filter((l) => l.before === lab.id)) out.push({ kind: "lesson", item });
+    out.push({ kind: "lab", item: lab });
+  }
+  return out;
+};
 
 export const ALL_SKILLS = Array.from(new Set(LABS.flatMap((l) => l.skills)));
 

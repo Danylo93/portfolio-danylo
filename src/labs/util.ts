@@ -24,18 +24,31 @@ export const table = (rows: string[][]) => {
   return rows.map((r) => r.map((c, i) => (i === r.length - 1 ? c : c.padEnd(widths[i] + 3))).join("")).join("\n");
 };
 
-/** Splits on whitespace, honoring single/double quotes. */
+/** Splits on whitespace like bash: quotes group words and are removed, even mid-token (--k="a b"). */
 export const tokenize = (line: string) => {
   const out: string[] = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(line))) {
-    // keep --flag="quoted value" together
-    const tok = m[1] ?? m[2] ?? m[3];
-    const prev = out[out.length - 1];
-    if ((m[1] !== undefined || m[2] !== undefined) && prev?.endsWith("=") && line[m.index - 1] !== " ") out[out.length - 1] = prev + tok;
-    else out.push(tok);
+  let cur = "";
+  let quote: string | null = null;
+  let started = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      if (c === quote) quote = null;
+      else if (c === "\\" && quote === '"' && (line[i + 1] === '"' || line[i + 1] === "\\")) cur += line[++i];
+      else cur += c;
+    } else if (c === '"' || c === "'") {
+      quote = c;
+      started = true;
+    } else if (/\s/.test(c)) {
+      if (started) out.push(cur);
+      cur = "";
+      started = false;
+    } else {
+      cur += c;
+      started = true;
+    }
   }
+  if (started) out.push(cur);
   return out;
 };
 
