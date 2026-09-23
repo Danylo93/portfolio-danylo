@@ -1,11 +1,12 @@
 import { motion } from "framer-motion";
+import type { LucideIcon } from "lucide-react";
 import { Cloud, Server, Database, Monitor, Lock, Zap, Globe, Layers, Eye, Box } from "lucide-react";
 
 interface ServiceItem {
   name: string;
   tag: string;
   color: string;
-  Icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>;
+  Icon: LucideIcon;
   desc?: string;
 }
 
