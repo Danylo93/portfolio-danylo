@@ -21,7 +21,7 @@ const TONE = {
 
 const IDLE_NUDGE_SEC = 45;
 
-const LabRunner = () => {
+const LabSession = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const lab = LABS.find((l) => l.id === id);
@@ -39,6 +39,7 @@ const LabRunner = () => {
   const [feed, setFeed] = useState<CoachMsg[]>([]);
   const [explainOpen, setExplainOpen] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [storageWarning, setStorageWarning] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const [stats, setStats] = useState({ hints: 0, misses: 0 });
   const stepStart = useRef(0);
@@ -50,10 +51,11 @@ const LabRunner = () => {
     setPassed([]);
     setElapsed(0);
     setStats({ hints: 0, misses: 0 });
+    setStorageWarning(false);
   }, [id, run]);
 
   useEffect(() => {
-    if (!lab || step >= lab.steps.length) return;
+    if (!lab || step < 0 || step >= lab.steps.length) return;
     const t = setInterval(() => {
       setElapsed((e) => e + 1);
       idle.current += 1;
@@ -102,7 +104,7 @@ const LabRunner = () => {
       setFailMsg(null);
       setSolved(true);
       setPassed((p) => (p.includes(step) ? p : [...p, step]));
-      if (isLast) markCompleted(lab.id);
+      if (isLast) setStorageWarning(!markCompleted(lab.id));
     } else {
       setStats((s) => ({ ...s, misses: s.misses + 1 }));
       setFailMsg(diagnose(current, shell, stepStart.current));
@@ -124,10 +126,10 @@ const LabRunner = () => {
     setTimeout(() => setCopied(null), 1200);
   };
 
-  const banner = `Welcome to Ubuntu 24.04 LTS (GNU/Linux 6.8.0-45-generic x86_64)\n\n  Lab: ${lab.title}\n  Cluster: kind-lab · 3 nodes · Kubernetes v1.30\n\nDigite 'help' para ver os comandos disponíveis.\n`;
+  const banner = `Danylo Labs — ambiente educacional simulado\n\n  Lab: ${lab.title}\n  Cluster: kind-lab · 3 nodes · Kubernetes v1.30\n\nDigite 'help' para ver os comandos disponíveis.\n`;
 
   return (
-    <div className="h-screen flex flex-col bg-background">
+    <div className="min-h-dvh lg:h-dvh flex flex-col bg-background">
       {/* Top bar */}
       <header className="h-12 shrink-0 border-b border-border bg-[#0f141b] flex items-center gap-3 px-3 sm:px-4">
         <Link to="/labs" className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-primary transition-colors" title="Voltar aos labs">
@@ -150,7 +152,7 @@ const LabRunner = () => {
             <Timer size={12} /> {fmt(elapsed)}
           </span>
           <button
-            onClick={() => setRun((r) => r + 1)}
+            onClick={() => { if (window.confirm("Reiniciar o ambiente? Os comandos e passos desta tentativa serão apagados.")) setRun((r) => r + 1); }}
             className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-primary transition-colors"
             title="Reiniciar ambiente"
           >
@@ -159,9 +161,9 @@ const LabRunner = () => {
         </div>
       </header>
 
-      <div className="flex-1 min-h-0 flex flex-col lg:flex-row gap-3 p-3">
+      <div className="flex-1 lg:min-h-0 flex flex-col lg:flex-row gap-3 p-3">
         {/* Terminal */}
-        <div className="flex-1 min-h-[45vh] lg:min-h-0 min-w-0">
+        <div className="h-[45dvh] min-h-[280px] lg:h-auto lg:flex-1 lg:min-h-0 min-w-0">
           <Terminal key={`${lab.id}-${run}`} ref={term} shell={shell} banner={banner} onCommand={onCommand} />
         </div>
 
@@ -455,6 +457,7 @@ const LabRunner = () => {
             </AnimatePresence>
           </div>
 
+          {storageWarning && <p role="alert" className="px-4 py-2 text-xs text-amber-300">Lab concluído, mas o navegador não conseguiu salvar o progresso. Verifique as permissões de armazenamento.</p>}
           {/* footer actions */}
           {!finished && (
             <div className="shrink-0 border-t border-border p-3 flex items-center gap-2">
@@ -507,4 +510,10 @@ const LabRunner = () => {
   );
 };
 
+const LabRunner = () => {
+  const { id } = useParams();
+  return <LabSession key={id} />;
+};
+
 export default LabRunner;
+
