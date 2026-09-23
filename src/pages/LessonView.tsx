@@ -141,9 +141,11 @@ const LessonView = () => {
   const lesson = LESSONS.find((l) => l.id === id);
   const [answers, setAnswers] = useState<Record<number, number>>({});
   const [done, setDone] = useState(false);
+  const [storageWarning, setStorageWarning] = useState(false);
 
   useEffect(() => {
     setAnswers({});
+    setStorageWarning(false);
     setDone(lesson ? loadProgress().includes(lessonKey(lesson.id)) : false);
     window.scrollTo({ top: 0 });
   }, [lesson]);
@@ -155,7 +157,7 @@ const LessonView = () => {
   const allRight = correct === lesson.quiz.length;
 
   const finish = () => {
-    markCompleted(lessonKey(lesson.id));
+    setStorageWarning(!markCompleted(lessonKey(lesson.id)));
     setDone(true);
   };
 
@@ -235,6 +237,7 @@ const LessonView = () => {
             })}
           </div>
 
+          {storageWarning && <p role="alert" className="mt-4 text-sm text-amber-300">Lição concluída, mas não foi possível salvar o progresso neste navegador.</p>}
           <div className="mt-8 flex flex-wrap items-center gap-3">
             {done ? (
               <span className="flex items-center gap-1.5 text-sm text-green-400"><CheckCircle2 size={16} /> Lição concluída</span>
@@ -264,3 +267,4 @@ const LessonView = () => {
 };
 
 export default LessonView;
+

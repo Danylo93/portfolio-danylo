@@ -32,29 +32,7 @@ export const pathOf = (trackId: string): ({ kind: "lesson"; item: Lesson } | { k
 
 export const ALL_SKILLS = Array.from(new Set(LABS.flatMap((l) => l.skills)));
 
-// ---------- progress persistence ----------
-const KEY = "danylo-labs-progress";
-
-export const loadProgress = (): string[] => {
-  try {
-    return JSON.parse(localStorage.getItem(KEY) ?? "[]");
-  } catch {
-    return [];
-  }
-};
-
-export const saveProgress = (ids: string[]) => {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(ids));
-  } catch {
-    /* storage unavailable */
-  }
-};
-
-export const markCompleted = (id: string) => {
-  const done = loadProgress();
-  if (!done.includes(id)) saveProgress([...done, id]);
-};
+export { loadProgress, saveProgress, markCompleted } from "./progress";
 
 // ---------- navigation ----------
 export const itemUrl = (x: { kind: "lesson" | "lab"; item: { id: string } }) => (x.kind === "lesson" ? `/labs/learn/${x.item.id}` : `/labs/${x.item.id}`);
@@ -67,3 +45,9 @@ export const nextInPath = (id: string) => {
 };
 
 export const lessonKey = (id: string) => `lesson:${id}`;
+
+
+/** First unfinished item, including the lessons that prepare each lab. */
+export const nextUnfinished = (done: readonly string[]) =>
+  TRACKS.flatMap((t) => pathOf(t.id)).find((x) =>
+    !done.includes(x.kind === "lesson" ? lessonKey(x.item.id) : x.item.id));

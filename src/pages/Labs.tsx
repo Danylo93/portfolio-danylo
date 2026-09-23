@@ -1,20 +1,35 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { ArrowLeft, Award, BookOpen, CheckCircle2, ChevronUp, Circle, Clock, FlaskConical, Lock, Puzzle, RotateCcw, Search, Terminal } from "lucide-react";
-import { ALL_SKILLS, LABS, LESSONS, TRACKS, lessonKey, loadProgress, pathOf, saveProgress } from "@/labs/data";
+import { ALL_SKILLS, LABS, LESSONS, TRACKS, itemUrl, nextUnfinished, lessonKey, loadProgress, pathOf, saveProgress } from "@/labs/data";
+
+import { exportProgress, importProgress, PROGRESS_EVENT, PROGRESS_KEY } from "@/labs/progress";
 
 const LEVEL_COLOR: Record<string, string> = { Iniciante: "#4ade80", Intermediário: "#fbbf24", Avançado: "#f87171" };
 
 const Labs = () => {
   const [done, setDone] = useState<string[]>(loadProgress);
+  const [notice, setNotice] = useState("");
+  useEffect(() => {
+    const sync = () => setDone(loadProgress());
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === PROGRESS_KEY || event.key === null) sync();
+    };
+    window.addEventListener(PROGRESS_EVENT, sync);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener(PROGRESS_EVENT, sync);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
   const [filter, setFilter] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState<Record<string, boolean>>(() => Object.fromEntries(TRACKS.map((t, i) => [t.id, i < 3])));
 
   const earned = new Set(LABS.filter((l) => done.includes(l.id)).flatMap((l) => l.skills));
   const pct = Math.round((earned.size / ALL_SKILLS.length) * 100);
-  const nextLab = LABS.find((l) => !done.includes(l.id)) ?? LABS[0];
+  const nextItem = nextUnfinished(done);
   const totalMinutes = LABS.reduce((a, l) => a + l.minutes, 0);
   const challenges = LABS.filter((l) => l.kind === "challenge").length;
 
@@ -41,10 +56,10 @@ const Labs = () => {
             <FlaskConical size={16} /> <span>danylo<span className="text-foreground">_labs</span></span>
           </div>
           <Link
-            to={`/labs/${nextLab.id}`}
+            to={nextItem ? itemUrl(nextItem) : "/labs"}
             className="text-xs font-mono px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-opacity"
           >
-            Continuar
+            {nextItem ? "Continuar" : "Tudo concluído"}
           </Link>
         </div>
       </header>
@@ -74,6 +89,14 @@ const Labs = () => {
             ))}
           </div>
         </motion.div>
+
+        <section className="mb-8 rounded-xl border border-primary/30 bg-primary/5 p-5 flex flex-col sm:flex-row sm:items-center gap-4">
+          <div className="flex-1">
+            <h2 className="font-display font-semibold">Leve a prática para o seu WSL</h2>
+            <p className="text-sm text-muted-foreground mt-1">Instale Node.js, kubectl, Kind, Helm, K9s e Terraform, e crie seu cluster local.</p>
+          </div>
+          <a href="https://github.com/Danylo93/portfolio-danylo/blob/main/docs/WSL.md" target="_blank" rel="noreferrer" className="text-sm px-4 py-2 rounded-md border border-primary/50 text-primary whitespace-nowrap">Guia de instalação ↗</a>
+        </section>
 
         {/* Filters */}
         <div className="flex flex-col md:flex-row gap-3 md:items-center mb-6">
@@ -247,7 +270,7 @@ const Labs = () => {
             </div>
             <div className="flex items-center gap-4 mt-4 text-xs text-muted-foreground">
               <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-green-500" /> Concluído {earned.size}</span>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-muted border border-border" /> Bloqueado {ALL_SKILLS.length - earned.size}</span>
+              <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-muted border border-border" /> A praticar {ALL_SKILLS.length - earned.size}</span>
             </div>
 
             <div className="mt-6 space-y-2.5">
@@ -269,15 +292,45 @@ const Labs = () => {
               })}
             </div>
 
+            <div className="mt-6 space-y-3 text-xs text-muted-foreground">
+              <p>Seu progresso fica neste navegador. Exporte um backup para guardar ou transferir para outro dispositivo.</p>
+              <div className="flex flex-wrap gap-3">
+                <button className="text-primary hover:underline" onClick={() => {
+                  const url = URL.createObjectURL(new Blob([exportProgress()], { type: "application/json" }));
+                  const link = document.createElement("a");
+                  link.href = url;
+                  link.download = "danylo-labs-progresso.json";
+                  link.click();
+                  setTimeout(() => URL.revokeObjectURL(url), 1000);
+                }}>Exportar progresso</button>
+                <label className="text-primary cursor-pointer hover:underline">
+                  Importar backup
+                  <input type="file" accept="application/json,.json" className="block mt-1 max-w-full text-xs" aria-label="Importar backup de progresso" onChange={async (event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (!file) return;
+                    try {
+                      if (file.size > 1024 * 1024) throw new Error("O backup deve ter no máximo 1 MB.");
+                      const valid = new Set([...LABS.map((l) => l.id), ...LESSONS.map((l) => lessonKey(l.id))]);
+                      if (!importProgress(await file.text(), valid)) throw new Error("Armazenamento indisponível. Não foi possível importar.");
+                      setNotice("Backup importado e combinado com seu progresso atual.");
+                    } catch (error) {
+                      setNotice(error instanceof Error ? error.message : "Não foi possível importar o backup.");
+                    }
+                  }} />
+                </label>
+              </div>
+              <p role="status">{notice}</p>
+            </div>
             <div className="mt-6 pt-4 border-t border-border flex items-center justify-between gap-3">
-              <Link to={`/labs/${nextLab.id}`} className="flex items-center gap-1.5 text-xs font-mono text-primary hover:underline min-w-0">
-                <Terminal size={12} className="shrink-0" /> <span className="truncate">próximo: {nextLab.title}</span>
+              <Link to={nextItem ? itemUrl(nextItem) : "/labs"} className="flex items-center gap-1.5 text-xs font-mono text-primary hover:underline min-w-0">
+                <Terminal size={12} className="shrink-0" /> <span className="truncate">{nextItem ? `próximo: ${nextItem.item.title}` : "Todas as trilhas concluídas!"}</span>
               </Link>
               {done.length > 0 && (
                 <button
                   onClick={() => {
-                    saveProgress([]);
-                    setDone([]);
+                    if (!window.confirm("Zerar todas as lições e labs concluídos? Exporte um backup antes de continuar.")) return;
+                    setNotice(saveProgress([]) ? "Progresso zerado." : "Não foi possível salvar. O armazenamento do navegador está indisponível.");
                   }}
                   className="shrink-0 flex items-center gap-1 text-[10px] font-mono text-muted-foreground hover:text-destructive transition-colors"
                   title="Zerar progresso"
@@ -294,3 +347,4 @@ const Labs = () => {
 };
 
 export default Labs;
+
