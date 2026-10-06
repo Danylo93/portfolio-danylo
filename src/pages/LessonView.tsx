@@ -5,6 +5,7 @@ import { AlertTriangle, ArrowLeft, ArrowRight, BookOpen, Check, CheckCircle2, Cl
 import { LESSONS, TRACKS, itemUrl, lessonKey, loadProgress, markCompleted, nextInPath } from "@/labs/data";
 import type { LessonBlock } from "@/labs/types";
 import NotFound from "./NotFound";
+import { loadLessonAnswers, saveLessonAnswers } from "@/labs/lesson-storage";
 
 /** **bold** and `code` inline formatting. */
 const inline = (text: string): ReactNode[] =>
@@ -135,20 +136,22 @@ const Block = ({ b, color }: { b: LessonBlock; color: string }) => {
   }
 };
 
-const LessonView = () => {
+const LessonSession = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const lesson = LESSONS.find((l) => l.id === id);
-  const [answers, setAnswers] = useState<Record<number, number>>({});
-  const [done, setDone] = useState(false);
+  const [answers, setAnswers] = useState<Record<number, number>>(() => lesson ? loadLessonAnswers(lesson) : {});
+  const [done, setDone] = useState(() => lesson ? loadProgress().includes(lessonKey(lesson.id)) : false);
   const [storageWarning, setStorageWarning] = useState(false);
+  const [completionWarning, setCompletionWarning] = useState(false);
 
   useEffect(() => {
-    setAnswers({});
-    setStorageWarning(false);
-    setDone(lesson ? loadProgress().includes(lessonKey(lesson.id)) : false);
     window.scrollTo({ top: 0 });
   }, [lesson]);
+
+  useEffect(() => {
+    if (lesson) setStorageWarning(!saveLessonAnswers(lesson, answers));
+  }, [lesson, answers]);
 
   if (!lesson) return <NotFound />;
   const track = TRACKS.find((t) => t.id === lesson.track)!;
@@ -157,7 +160,7 @@ const LessonView = () => {
   const allRight = correct === lesson.quiz.length;
 
   const finish = () => {
-    setStorageWarning(!markCompleted(lessonKey(lesson.id)));
+    setCompletionWarning(!markCompleted(lessonKey(lesson.id)));
     setDone(true);
   };
 
@@ -237,7 +240,7 @@ const LessonView = () => {
             })}
           </div>
 
-          {storageWarning && <p role="alert" className="mt-4 text-sm text-amber-300">Lição concluída, mas não foi possível salvar o progresso neste navegador.</p>}
+          {(storageWarning || completionWarning) && <p role="alert" className="mt-4 text-sm text-amber-300">Não foi possível salvar as respostas ou o progresso neste navegador.</p>}
           <div className="mt-8 flex flex-wrap items-center gap-3">
             {done ? (
               <span className="flex items-center gap-1.5 text-sm text-green-400"><CheckCircle2 size={16} /> Lição concluída</span>
@@ -266,5 +269,7 @@ const LessonView = () => {
   );
 };
 
-export default LessonView;
-
+export default function LessonView() {
+  const { id } = useParams();
+  return <LessonSession key={id} />;
+}

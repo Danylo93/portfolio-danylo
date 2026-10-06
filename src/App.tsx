@@ -10,6 +10,8 @@ import NotFound from "./pages/NotFound.tsx";
 const Labs = lazy(() => import("./pages/Labs.tsx"));
 const LabRunner = lazy(() => import("./pages/LabRunner.tsx"));
 const LessonView = lazy(() => import("./pages/LessonView.tsx"));
+const Exams = lazy(() => import("./pages/Exams.tsx"));
+const ExamRunner = lazy(() => import("./pages/ExamRunner.tsx"));
 
 const queryClient = new QueryClient();
 
@@ -23,6 +25,8 @@ const App = () => (
           <Routes>
             <Route path="/" element={<Index />} />
             <Route path="/labs" element={<Labs />} />
+            <Route path="/labs/exams" element={<Exams />} />
+            <Route path="/labs/exams/:id" element={<ExamRunner />} />
             <Route path="/labs/learn/:id" element={<LessonView />} />
             <Route path="/labs/:id" element={<LabRunner />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
@@ -35,4 +39,3 @@ const App = () => (
 );
 
 export default App;
-

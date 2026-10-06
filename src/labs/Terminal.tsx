@@ -2,19 +2,36 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import { getTool } from "./registry";
 import type { Shell } from "./shell";
 import type { EditRequest } from "./types";
+import { z } from "zod";
+import { readStored, writeStored } from "../lib/storage";
 
 type Line = { kind: "in" | "out" | "sys"; text: string; prompt?: string };
+const terminalSchema = z.object({ version: z.literal(1),
+  lines: z.array(z.object({ kind: z.enum(["in", "out", "sys"]), text: z.string(), prompt: z.string().optional() })),
+  input: z.string(), hist: z.array(z.string()), editing: z.object({ path: z.string(), content: z.string() }).nullable(),
+  draft: z.string(), editorCommand: z.string(),
+});
+type TerminalData = z.infer<typeof terminalSchema>;
 
 export type TerminalHandle = { insert: (cmd: string) => void; focus: () => void };
 
-const Terminal = forwardRef<TerminalHandle, { shell: Shell; banner: string; onCommand?: () => void }>(
-  ({ shell, banner, onCommand }, ref) => {
-    const [lines, setLines] = useState<Line[]>([{ kind: "sys", text: banner }]);
-    const [input, setInput] = useState("");
-    const [hist, setHist] = useState<string[]>([]);
+const Terminal = forwardRef<TerminalHandle, { shell: Shell; banner: string; onCommand?: () => void; storageKey?: string; restoreStored?: boolean; onStorageError?: (failed: boolean) => void }>(
+  ({ shell, banner, onCommand, storageKey, restoreStored = true, onStorageError }, ref) => {
+    const [initial] = useState(() => {
+      const saved = storageKey && restoreStored ? readStored(storageKey, (value): value is TerminalData => terminalSchema.safeParse(value).success) : null;
+      if (saved?.editing) {
+        const reopened = shell.reopenEditor(saved.editorCommand, saved.editing.path);
+        if (!reopened || reopened.path !== saved.editing.path) saved.editing = null;
+      }
+      return saved;
+    });
+    const [lines, setLines] = useState<Line[]>(initial?.lines as Line[] ?? [{ kind: "sys", text: banner }]);
+    const [input, setInput] = useState(initial?.input ?? "");
+    const [hist, setHist] = useState<string[]>(initial?.hist ?? []);
     const [hIdx, setHIdx] = useState(-1);
-    const [editing, setEditing] = useState<EditRequest | null>(null);
-    const [draft, setDraft] = useState("");
+    const [editing, setEditing] = useState<EditRequest | null>(initial?.editing as EditRequest ?? null);
+    const [draft, setDraft] = useState(initial?.draft ?? "");
+    const [editorCommand, setEditorCommand] = useState(initial?.editorCommand ?? "");
     const inputRef = useRef<HTMLInputElement>(null);
     const editorRef = useRef<HTMLTextAreaElement>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -28,8 +45,8 @@ const Terminal = forwardRef<TerminalHandle, { shell: Shell; banner: string; onCo
     }));
 
     useEffect(() => {
-      setLines([{ kind: "sys", text: banner }]);
-    }, [shell, banner]);
+      if (storageKey) onStorageError?.(!writeStored(storageKey, { version: 1, lines: lines.slice(-500), input, hist: hist.slice(-500), editing, draft, editorCommand }));
+    }, [storageKey, lines, input, hist, editing, draft, editorCommand, onStorageError]);
 
     useEffect(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -49,6 +66,7 @@ const Terminal = forwardRef<TerminalHandle, { shell: Shell; banner: string; onCo
       if (res.clear) setLines([]);
       else setLines((l) => [...l, { kind: "in", text: cmd, prompt }, ...(res.output ? [{ kind: "out" as const, text: res.output }] : [])]);
       if (res.edit) {
+        setEditorCommand(cmd);
         setEditing(res.edit);
         setDraft(res.edit.content);
       }
@@ -63,6 +81,8 @@ const Terminal = forwardRef<TerminalHandle, { shell: Shell; banner: string; onCo
         onCommand?.();
       } else setLines((l) => [...l, { kind: "out", text: `(saiu sem salvar: ${editing.path})` }]);
       setEditing(null);
+      setDraft("");
+      setEditorCommand("");
       setTimeout(() => inputRef.current?.focus(), 0);
     };
 
