@@ -3,8 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, Clock, Flag } from "lucide-react";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { EXAMS, type ExamInfo } from "@/exams/catalog";
-import { aiQuestions } from "@/exams/ai";
-import { cloudQuestions } from "@/exams/cloud";
+import { QUESTION_BANKS } from "@/exams/banks";
 import type { Question } from "@/exams/questions";
 import { createAttempt, finishAttempt, formatTime, grade, isAnswered, isCorrect, loadAttempt, saveAttempt, type Attempt } from "@/exams/attempt";
 import NotFound from "./NotFound";
@@ -82,11 +81,12 @@ function ExamSession({ exam, questions }: { exam: ExamInfo; questions: Question[
     </header>
     <main className="container max-w-6xl px-4 py-8">
       <h1 className="font-display text-2xl sm:text-3xl font-bold">{exam.title}</h1>
+      {exam.note && <p className="mt-3 text-sm text-muted-foreground">{exam.note}</p>}
       {warning && <p role="alert" className="text-amber-300 mt-4">Não foi possível salvar a tentativa. Continue nesta página para preservar suas respostas.</p>}
       {!attempt ? <section className="mt-6 max-w-3xl rounded-xl border border-border bg-card/50 p-6">
         <h2 className="text-lg font-semibold">Prepare-se para começar</h2>
         <ul className="mt-4 space-y-3 text-sm text-muted-foreground list-disc pl-5">
-          <li>65 questões autorais em português, com {exam.minutes} minutos.</li>
+          <li>{questions.length} questões autorais em português, com {exam.minutes} minutos.</li>
           <li>{exam.id === "ai-practitioner" ? "Escolha única, múltiplas respostas, ordenação e associação." : "Escolha única e múltiplas respostas."}</li>
           <li>Você pode navegar, alterar respostas e marcar questões para revisão.</li>
           <li>O gabarito aparece apenas após a entrega. Questões em branco contam como incorretas.</li>
@@ -171,6 +171,6 @@ function ExamSession({ exam, questions }: { exam: ExamInfo; questions: Question[
 
 export default function ExamRunner() {
   const { id } = useParams(); const exam = EXAMS.find((exam) => exam.id === id);
-  if (!exam) return <NotFound />;
-  return <ExamSession key={exam.id} exam={exam} questions={exam.id === "cloud-practitioner" ? cloudQuestions : aiQuestions} />;
+  if (!exam || !QUESTION_BANKS[exam.id]) return <NotFound />;
+  return <ExamSession key={exam.id} exam={exam} questions={QUESTION_BANKS[exam.id]} />;
 }

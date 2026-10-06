@@ -2,15 +2,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { EXAMS } from "./catalog";
 import { aiQuestions } from "./ai";
 import { cloudQuestions } from "./cloud";
+import { devopsQuestions } from "./devops";
+import { QUESTION_BANKS } from "./banks";
 import { createAttempt, finishAttempt, grade, isAnswered, isCorrect, loadAttempt, parseAttempt, saveAttempt } from "./attempt";
 
 afterEach(() => vi.restoreAllMocks());
 
 describe("bancos de certificação", () => {
-  it.each([[EXAMS[0], cloudQuestions, [16, 19, 22, 8]], [EXAMS[1], aiQuestions, [13, 16, 18, 9, 9]]] as const)("%s cobre os domínios e tipos de resposta", (exam, questions, counts) => {
-    expect(questions).toHaveLength(65);
-    expect(new Set(questions.map((q) => q.id)).size).toBe(65);
-    expect(new Set(questions.map((q) => q.prompt)).size).toBe(65);
+  it.each([[EXAMS[0], cloudQuestions, [16, 19, 22, 8]], [EXAMS[1], aiQuestions, [13, 16, 18, 9, 9]], [EXAMS[2], devopsQuestions, [16, 13, 11, 11, 11, 13]]] as const)("%s cobre os domínios e tipos de resposta", (exam, questions, counts) => {
+    expect(questions).toHaveLength(exam.questionCount);
+    expect(new Set(questions.map((q) => q.id)).size).toBe(exam.questionCount);
+    expect(new Set(questions.map((q) => q.prompt)).size).toBe(exam.questionCount);
+    expect(QUESTION_BANKS[exam.id]).toBe(questions);
     expect(exam.domains.map((_, i) => questions.filter((q) => q.domain === i).length)).toEqual(counts);
     expect(questions.some((q) => q.type === "choice" && q.correct.length > 1)).toBe(true);
     for (const q of questions) {
@@ -29,6 +32,20 @@ describe("bancos de certificação", () => {
 });
 
 describe("correção e persistência", () => {
+  it("mantém tentativas separadas para as três provas e não oferece CKA ou CKAD teóricos", () => {
+    localStorage.clear();
+    expect(EXAMS.map((exam) => exam.id)).toEqual(["cloud-practitioner", "ai-practitioner", "devops-professional"]);
+    for (const exam of EXAMS) {
+      const questions = QUESTION_BANKS[exam.id];
+      const attempt = createAttempt(exam, questions);
+      attempt.answers[attempt.order[0]] = questions.find((q) => q.id === attempt.order[0])!.correct;
+      expect(attempt.deadline - attempt.startedAt).toBe(exam.minutes * 60_000);
+      expect(saveAttempt(attempt)).toBe(true);
+      expect(loadAttempt(exam, questions)).toEqual(attempt);
+    }
+    for (const exam of EXAMS) expect(loadAttempt(exam, QUESTION_BANKS[exam.id])?.examId).toBe(exam.id);
+    localStorage.clear();
+  });
   it("não dá pontuação parcial em múltiplas respostas", () => {
     const q = cloudQuestions.find((q) => q.correct.length > 1)!;
     expect(isCorrect(q, [q.correct[0]])).toBe(false);

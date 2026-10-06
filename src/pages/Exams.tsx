@@ -16,7 +16,8 @@ export default function Exams() {
           <span className="font-mono text-xs text-primary">{exam.code}</span>
           <h2 className="font-display text-xl font-bold mt-2">{exam.title}</h2>
           <p className="text-muted-foreground text-sm mt-3">{exam.description}</p>
-          <p className="flex items-center gap-2 mt-4 text-sm"><Clock size={15} /> 65 questões · {exam.minutes} minutos</p>
+          {exam.note && <p className="text-xs text-muted-foreground mt-3">{exam.note}</p>}
+          <p className="flex items-center gap-2 mt-4 text-sm"><Clock size={15} /> {exam.questionCount} questões · {exam.minutes} minutos</p>
           <ul className="mt-4 space-y-2 text-xs text-muted-foreground">
             {exam.domains.map((d) => <li key={d.name} className="flex justify-between gap-3"><span>{d.name}</span><span>{d.weight}%</span></li>)}
           </ul>
@@ -24,7 +25,7 @@ export default function Exams() {
           <a href={exam.guide} target="_blank" rel="noreferrer" className="block text-xs text-primary mt-4">Guia oficial da AWS ↗</a>
         </article>)}
       </div>
-      <p className="text-xs text-muted-foreground leading-relaxed mt-6">Simulados independentes, sem vínculo com a AWS e sem emissão de certificação. Todas as 65 questões contam neste treino. Meta didática: 70% de acertos; essa porcentagem não equivale à nota escalonada oficial. Os pesos acima são os do guia oficial; a distribuição do banco é aproximada. Conteúdo revisado em 06/10/2026.</p>
+      <p className="text-xs text-muted-foreground leading-relaxed mt-6">Simulados independentes, sem vínculo com a AWS e sem emissão de certificação. Todas as questões contam neste treino. Meta didática: 70% de acertos; essa porcentagem não equivale à nota escalonada oficial. Os pesos acima são os do guia oficial; a distribuição do banco é aproximada. Conteúdo revisado em 06/10/2026.</p>
     </main>
   </div>;
 }

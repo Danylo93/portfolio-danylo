@@ -115,8 +115,8 @@ const Labs = () => {
 
         <section className="mb-8 rounded-xl border border-amber-500/30 bg-amber-500/5 p-5 flex flex-col sm:flex-row sm:items-center gap-4">
           <div className="flex-1">
-            <h2 className="font-display font-semibold">Provas práticas de certificação AWS</h2>
-            <p className="text-sm text-muted-foreground mt-1">Cloud Practitioner e AI Practitioner: 65 questões autorais, 90 minutos, revisão e resultado comentado.</p>
+            <h2 className="font-display font-semibold">Simulados de certificação AWS</h2>
+            <p className="text-sm text-muted-foreground mt-1">Cloud Practitioner, AI Practitioner e DevOps Engineer – Professional: questões autorais, cronômetro e resultado comentado.</p>
           </div>
           <Link to="/labs/exams" className="text-sm px-4 py-2 rounded-md border border-amber-500/50 text-amber-300 whitespace-nowrap">Abrir simulados →</Link>
         </section>

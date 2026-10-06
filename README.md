@@ -6,11 +6,11 @@ Plataforma de aprendizado DevOps em React, TypeScript e Vite: lições, quizzes,
 - `/labs`: catálogo, busca, trilhas e progresso.
 - `/labs/learn/:id`: lições e quizzes.
 - `/labs/:id`: terminal e exercícios com validação.
-- `/labs/exams`: simulados AWS Cloud Practitioner (CLF-C02) e AI Practitioner (AIF-C01).
+- `/labs/exams`: simulados AWS Cloud Practitioner (CLF-C02), AI Practitioner (AIF-C01) e DevOps Engineer – Professional (DOP-C02).
 
-Os simulados de certificação têm 65 questões autorais e 90 minutos cada, com escolha única e múltiplas respostas. AI Practitioner também inclui ordenação e associação. É possível marcar questões, navegar e revisar respostas antes de entregar. O prazo continua ao sair; a tentativa e o resultado são salvos neste navegador. O gabarito comentado e o desempenho por domínio aparecem após a entrega, inclusive quando o tempo acaba.
+Cloud Practitioner e AI Practitioner têm 65 questões autorais e 90 minutos cada. DevOps Engineer – Professional tem 75 questões e 180 minutos. Os simulados têm escolha única e múltiplas respostas; AI Practitioner também inclui ordenação e associação. É possível marcar questões, navegar e revisar respostas antes de entregar. O prazo continua ao sair; a tentativa e o resultado são salvos neste navegador. O gabarito comentado e o desempenho por domínio aparecem após a entrega, inclusive quando o tempo acaba. CKA e CKAD mantêm somente os labs práticos, sem exames teóricos.
 
-Todas as questões são pontuadas no treino, com meta didática de 70% de acertos. Essa porcentagem não equivale à nota escalonada oficial, e o projeto não emite certificação. O conteúdo segue os domínios dos guias oficiais [CLF-C02](https://docs.aws.amazon.com/aws-certification/latest/cloud-practitioner-02/cloud-practitioner-02.html) e [AIF-C01](https://docs.aws.amazon.com/aws-certification/latest/ai-practitioner-01/ai-practitioner-01.html), revisados em 06/10/2026.
+Todas as questões são pontuadas no treino, com meta didática de 70% de acertos. Essa porcentagem não equivale à nota escalonada oficial, e o projeto não emite certificação. O conteúdo segue os domínios dos guias oficiais [CLF-C02](https://docs.aws.amazon.com/aws-certification/latest/cloud-practitioner-02/cloud-practitioner-02.html), [AIF-C01](https://docs.aws.amazon.com/aws-certification/latest/ai-practitioner-01/ai-practitioner-01.html) e [DOP-C02](https://docs.aws.amazon.com/aws-certification/latest/devops-engineer-professional-02/devops-engineer-professional-02.html), revisados em 06/10/2026.
 
 O modo padrão é um **simulador local no navegador**, sem acesso ao sistema operacional, cluster real ou conta AWS. O progresso do simulador é salvo no navegador, com exportação/importação de backup JSON.
 

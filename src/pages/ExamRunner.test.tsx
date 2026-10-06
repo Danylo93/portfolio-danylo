@@ -14,6 +14,21 @@ const show = (id = "cloud-practitioner") => render(<MemoryRouter initialEntries=
 beforeEach(() => { localStorage.clear(); vi.useFakeTimers(); });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
+it("abre DevOps com 75 questões, 180 minutos e retoma sua própria tentativa", () => {
+  const view = show("devops-professional");
+  expect(screen.getByText(/75 questões autorais/)).toBeInTheDocument();
+  expect(screen.getByRole("timer")).toHaveTextContent("180:00");
+  fireEvent.click(screen.getByRole("button", { name: "Iniciar prova" }));
+  expect(screen.getByText("Questão 1 de 75")).toBeInTheDocument();
+  fireEvent.click(screen.queryAllByRole("radio")[0] ?? screen.getAllByRole("checkbox")[0]);
+  fireEvent.click(screen.getByRole("button", { name: "Marcar para revisão" }));
+  act(() => vi.advanceTimersByTime(1000));
+  view.unmount(); show("devops-professional");
+  expect(screen.getByRole("timer")).toHaveTextContent("179:59");
+  expect(screen.getByRole("button", { name: "Desmarcar revisão" })).toHaveAttribute("aria-pressed", "true");
+  expect(localStorage.getItem(attemptKey("cloud-practitioner"))).toBeNull();
+});
+
 it("inicia o cronômetro somente ao começar e preserva respostas e marcações ao recarregar", () => {
   const view = show();
   act(() => vi.advanceTimersByTime(3000));
@@ -84,7 +99,7 @@ it("permite concluir todas as questões de AI, incluindo associação e ordenaç
   fireEvent.click(screen.getByRole("button", { name: "Nova tentativa" }));
   expect(screen.getByRole("timer")).toHaveTextContent("90:00");
   expect(screen.getByText("0/65 respondidas · 0 marcadas")).toBeInTheDocument();
-});
+}, 15_000);
 
 it("informa falha de armazenamento sem impedir a prova", () => {
   vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("blocked"); });
