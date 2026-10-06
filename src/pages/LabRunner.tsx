@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft, Bot, Brain, Check, ChevronLeft, ChevronRight, Copy, HelpCircle, Info, Lightbulb, ListChecks, RotateCcw, Timer, X,
 } from "lucide-react";
 import { LABS, itemUrl, markCompleted, nextInPath } from "@/labs/data";
-import { Shell } from "@/labs/shell";
 import { diagnose, explainCommand, react, type CoachMsg } from "@/labs/coach";
 import Terminal, { type TerminalHandle } from "@/labs/Terminal";
 import NotFound from "./NotFound";
+import RealLabRunner from "@/labs/real/RealLabRunner";
+import { isRealLab } from "@/labs/real/catalog";
+import { clearLabSession, loadLabSession, restoredShell, saveLabSession, terminalKey } from "@/labs/session";
 
 const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
@@ -21,38 +23,41 @@ const TONE = {
 
 const IDLE_NUDGE_SEC = 45;
 
-const LabSession = () => {
+const LabSession = ({ onRestart }: { onRestart: () => void }) => {
   const { id } = useParams();
   const navigate = useNavigate();
   const lab = LABS.find((l) => l.id === id);
-  const [run, setRun] = useState(0);
-  const shell = useMemo(() => (lab ? new Shell(lab.seed) : null), [lab, run]); // eslint-disable-line react-hooks/exhaustive-deps -- run forces a fresh environment
+  const [saved] = useState(() => lab ? loadLabSession(lab) : null);
+  const [shell] = useState(() => lab ? restoredShell(lab, saved) : null);
+  const [revision, setRevision] = useState(0);
   const term = useRef<TerminalHandle>(null);
   const feedEnd = useRef<HTMLDivElement>(null);
 
   // -1 = intro, steps.length = finished
-  const [step, setStep] = useState(-1);
-  const [passed, setPassed] = useState<number[]>([]);
+  const [step, setStep] = useState(saved?.step ?? -1);
+  const [passed, setPassed] = useState<number[]>(saved?.passed ?? []);
   const [solved, setSolved] = useState(false);
   const [failMsg, setFailMsg] = useState<string | null>(null);
-  const [hintLevel, setHintLevel] = useState(0);
+  const [hintLevel, setHintLevel] = useState(saved?.hintLevel ?? 0);
   const [feed, setFeed] = useState<CoachMsg[]>([]);
   const [explainOpen, setExplainOpen] = useState<string | null>(null);
-  const [elapsed, setElapsed] = useState(0);
+  const [elapsed, setElapsed] = useState(saved?.elapsed ?? 0);
   const [storageWarning, setStorageWarning] = useState(false);
+  const [terminalWarning, setTerminalWarning] = useState(false);
+  const [progressWarning, setProgressWarning] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
-  const [stats, setStats] = useState({ hints: 0, misses: 0 });
+  const [stats, setStats] = useState(saved?.stats ?? { hints: 0, misses: 0 });
   const stepStart = useRef(0);
   const idle = useRef(0);
   const announced = useRef(false);
 
+  const lastStep = useRef(step);
+
   useEffect(() => {
-    setStep(-1);
-    setPassed([]);
-    setElapsed(0);
-    setStats({ hints: 0, misses: 0 });
-    setStorageWarning(false);
-  }, [id, run]);
+    if (!lab || !shell) return;
+    setStorageWarning(!saveLabSession({ version: 1, labId: lab.id, stepCount: lab.steps.length,
+      step, passed, elapsed, hintLevel, stats, shell: shell.snapshot() }));
+  }, [lab, shell, step, passed, elapsed, hintLevel, stats, revision]);
 
   useEffect(() => {
     if (!lab || step < 0 || step >= lab.steps.length) return;
@@ -67,6 +72,8 @@ const LabSession = () => {
   }, [lab, step]);
 
   useEffect(() => {
+    if (lastStep.current === step) return;
+    lastStep.current = step;
     setSolved(false);
     setFailMsg(null);
     setHintLevel(0);
@@ -90,6 +97,7 @@ const LabSession = () => {
   const isLast = step === lab.steps.length - 1;
 
   const onCommand = () => {
+    setRevision((r) => r + 1);
     idle.current = 0;
     const entry = shell.entries[shell.entries.length - 1];
     if (!entry || solved) return;
@@ -104,7 +112,7 @@ const LabSession = () => {
       setFailMsg(null);
       setSolved(true);
       setPassed((p) => (p.includes(step) ? p : [...p, step]));
-      if (isLast) setStorageWarning(!markCompleted(lab.id));
+      if (isLast) setProgressWarning(!markCompleted(lab.id));
     } else {
       setStats((s) => ({ ...s, misses: s.misses + 1 }));
       setFailMsg(diagnose(current, shell, stepStart.current));
@@ -152,7 +160,7 @@ const LabSession = () => {
             <Timer size={12} /> {fmt(elapsed)}
           </span>
           <button
-            onClick={() => { if (window.confirm("Reiniciar o ambiente? Os comandos e passos desta tentativa serão apagados.")) setRun((r) => r + 1); }}
+            onClick={() => { if (window.confirm("Reiniciar o ambiente? Os comandos e passos desta tentativa serão apagados.")) onRestart(); }}
             className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-primary transition-colors"
             title="Reiniciar ambiente"
           >
@@ -164,7 +172,7 @@ const LabSession = () => {
       <div className="flex-1 lg:min-h-0 flex flex-col lg:flex-row gap-3 p-3">
         {/* Terminal */}
         <div className="h-[45dvh] min-h-[280px] lg:h-auto lg:flex-1 lg:min-h-0 min-w-0">
-          <Terminal key={`${lab.id}-${run}`} ref={term} shell={shell} banner={banner} onCommand={onCommand} />
+          <Terminal ref={term} shell={shell} banner={banner} onCommand={onCommand} storageKey={terminalKey(lab.id)} restoreStored={!!saved} onStorageError={setTerminalWarning} />
         </div>
 
         {/* Instructions */}
@@ -431,7 +439,7 @@ const LabSession = () => {
                       </p>
                       <div className="flex flex-wrap gap-2 mt-4">
                         <button
-                          onClick={() => setRun((r) => r + 1)}
+                          onClick={onRestart}
                           className="text-sm px-4 py-2 rounded-md border border-primary/50 text-primary hover:bg-primary/10 transition-colors"
                         >
                           Começar Novamente
@@ -457,7 +465,7 @@ const LabSession = () => {
             </AnimatePresence>
           </div>
 
-          {storageWarning && <p role="alert" className="px-4 py-2 text-xs text-amber-300">Lab concluído, mas o navegador não conseguiu salvar o progresso. Verifique as permissões de armazenamento.</p>}
+          {(storageWarning || terminalWarning || progressWarning) && <p role="alert" className="px-4 py-2 text-xs text-amber-300">O navegador não conseguiu salvar a tentativa ou o progresso. Continue nesta página e verifique o espaço e as permissões de armazenamento.</p>}
           {/* footer actions */}
           {!finished && (
             <div className="shrink-0 border-t border-border p-3 flex items-center gap-2">
@@ -512,8 +520,10 @@ const LabSession = () => {
 
 const LabRunner = () => {
   const { id } = useParams();
-  return <LabSession key={id} />;
+  const [run, setRun] = useState(0);
+  const lab = LABS.find((item) => item.id === id);
+  if (import.meta.env.DEV && import.meta.env.MODE === "real" && lab && isRealLab(lab.id)) return <RealLabRunner key={id} lab={lab} />;
+  return <LabSession key={`${id}-${run}`} onRestart={() => { if (lab) clearLabSession(lab.id); setRun((r) => r + 1); }} />;
 };
 
 export default LabRunner;
-

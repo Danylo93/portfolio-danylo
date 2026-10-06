@@ -5,12 +5,20 @@ import { ArrowLeft, Award, BookOpen, CheckCircle2, ChevronUp, Circle, Clock, Fla
 import { ALL_SKILLS, LABS, LESSONS, TRACKS, itemUrl, nextUnfinished, lessonKey, loadProgress, pathOf, saveProgress } from "@/labs/data";
 
 import { exportProgress, importProgress, PROGRESS_EVENT, PROGRESS_KEY } from "@/labs/progress";
+import { readStored, writeStored } from "@/lib/storage";
+import { z } from "zod";
+
+const preferencesSchema = z.object({ version: z.literal(1), filter: z.string(), query: z.string(), open: z.record(z.boolean()) });
+type Preferences = z.infer<typeof preferencesSchema>;
+const PREFERENCES_KEY = "danylo-labs-catalog-v1";
 
 const LEVEL_COLOR: Record<string, string> = { Iniciante: "#4ade80", Intermediário: "#fbbf24", Avançado: "#f87171" };
 
 const Labs = () => {
+  const realMode = import.meta.env.DEV && import.meta.env.MODE === "real";
   const [done, setDone] = useState<string[]>(loadProgress);
   const [notice, setNotice] = useState("");
+  const [preferences] = useState(() => readStored(PREFERENCES_KEY, (value): value is Preferences => preferencesSchema.safeParse(value).success));
   useEffect(() => {
     const sync = () => setDone(loadProgress());
     const onStorage = (event: StorageEvent) => {
@@ -23,9 +31,13 @@ const Labs = () => {
       window.removeEventListener("storage", onStorage);
     };
   }, []);
-  const [filter, setFilter] = useState<string>("all");
-  const [query, setQuery] = useState("");
-  const [open, setOpen] = useState<Record<string, boolean>>(() => Object.fromEntries(TRACKS.map((t, i) => [t.id, i < 3])));
+  const [filter, setFilter] = useState<string>(() => preferences && TRACKS.some((t) => t.id === preferences.filter) ? preferences.filter : "all");
+  const [query, setQuery] = useState(preferences?.query ?? "");
+  const [open, setOpen] = useState<Record<string, boolean>>(() => preferences?.open ?? Object.fromEntries(TRACKS.map((t, i) => [t.id, i < 3])));
+
+  useEffect(() => {
+    if (!writeStored(PREFERENCES_KEY, { version: 1, filter, query, open })) setNotice("Não foi possível salvar as preferências neste navegador.");
+  }, [filter, query, open]);
 
   const earned = new Set(LABS.filter((l) => done.includes(l.id)).flatMap((l) => l.skills));
   const pct = Math.round((earned.size / ALL_SKILLS.length) * 100);
@@ -71,9 +83,12 @@ const Labs = () => {
             Labs <span className="gradient-text">Interativos</span>
           </h1>
           <p className="text-muted-foreground mt-3 text-sm leading-relaxed">
+            {realMode ? "Modo local real: os sete labs de Kubernetes Fundamentos executam comandos no seu cluster Kind. As demais trilhas continuam no simulador. As conclusões do simulador abaixo são independentes das tentativas reais." : <>
             Terminal no navegador com cluster Kubernetes de 3 nós, Docker, Terraform/AWS, Ansible, pipelines CI/CD e ferramentas de segurança —
             tudo simulado. Siga os passos, rode os comandos e clique em <span className="text-primary font-mono">Verificar</span>. O Mentor explica cada acerto e cada erro.
+            </>}
           </p>
+          {realMode && <Link to="/labs/k8s-cluster-explore" className="inline-block mt-4 rounded bg-primary px-4 py-2 text-primary-foreground text-sm">Começar no cluster real →</Link>}
           <div className="flex flex-wrap gap-2 mt-5">
             {[
               { v: LABS.length, k: "labs" },
@@ -96,6 +111,14 @@ const Labs = () => {
             <p className="text-sm text-muted-foreground mt-1">Instale Node.js, kubectl, Kind, Helm, K9s e Terraform, e crie seu cluster local.</p>
           </div>
           <a href="https://github.com/Danylo93/portfolio-danylo/blob/main/docs/WSL.md" target="_blank" rel="noreferrer" className="text-sm px-4 py-2 rounded-md border border-primary/50 text-primary whitespace-nowrap">Guia de instalação ↗</a>
+        </section>
+
+        <section className="mb-8 rounded-xl border border-amber-500/30 bg-amber-500/5 p-5 flex flex-col sm:flex-row sm:items-center gap-4">
+          <div className="flex-1">
+            <h2 className="font-display font-semibold">Provas práticas de certificação AWS</h2>
+            <p className="text-sm text-muted-foreground mt-1">Cloud Practitioner e AI Practitioner: 65 questões autorais, 90 minutos, revisão e resultado comentado.</p>
+          </div>
+          <Link to="/labs/exams" className="text-sm px-4 py-2 rounded-md border border-amber-500/50 text-amber-300 whitespace-nowrap">Abrir simulados →</Link>
         </section>
 
         {/* Filters */}
@@ -347,4 +370,3 @@ const Labs = () => {
 };
 
 export default Labs;
-

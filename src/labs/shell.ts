@@ -11,6 +11,12 @@ export type { Entry, LabState, Seed } from "./types";
 
 export type ExecResult = { output: string; clear?: boolean; edit?: EditRequest };
 
+export type ShellSnapshot = {
+  state: LabState; log: string[]; entries: Entry[]; flags: Set<string>;
+  env: Record<string, string>; aliases: Record<string, string>; cwd: string; host: string;
+  store: Map<string, unknown>;
+};
+
 const ERROR_OUT =
   /(^|\n)(error|Error|ERROR|bash:|docker: |curl: \(|wget: |cat: |ls: |cd: |rm: |cp: |mv: |mkdir: |sed: |grep: |ssh: |│ Error|fatal:|FATAL|E: |Failed to |"docker \w+" requires|command terminated with exit code)/;
 
@@ -122,6 +128,42 @@ export class Shell {
   }
 
   // ---------- generic plugin state ----------
+  snapshot(): ShellSnapshot {
+    return { state: this.state, log: this.log, entries: this.entries, flags: this.flags,
+      env: this.env, aliases: this.aliases, cwd: this.cwd, host: this.host, store: this.store };
+  }
+
+  restore(snapshot: ShellSnapshot) {
+    this.state = snapshot.state;
+    this.log = snapshot.log;
+    this.entries = snapshot.entries;
+    this.flags = snapshot.flags;
+    this.env = snapshot.env;
+    this.aliases = snapshot.aliases;
+    this.cwd = snapshot.cwd;
+    this.host = snapshot.host;
+    this.store = snapshot.store;
+    this.editHooks.clear();
+  }
+
+  /** Recreate an editor callback, never replay resource-changing commands. */
+  reopenEditor(command: string, savedPath?: string): EditRequest | undefined {
+    if (/[|&;\n]/.test(command) || !/^(?:(?:vi|vim|nano)\s|kubectl\b.*\bedit\s)/.test(command)) return undefined;
+    const log = [...this.log]; const entries = [...this.entries];
+    try {
+      const edit = this.exec(command).edit;
+      if (edit && savedPath && edit.path !== savedPath) {
+        const hook = this.editHooks.get(edit.path);
+        if (!hook) return undefined;
+        this.editHooks.delete(edit.path);
+        this.editHooks.set(savedPath, hook);
+        return { ...edit, path: savedPath };
+      }
+      return edit;
+    }
+    finally { this.log = log; this.entries = entries; }
+  }
+
   ext<T>(key: string, init: () => T): T {
     if (!this.store.has(key)) this.store.set(key, init());
     return this.store.get(key) as T;
@@ -143,7 +185,12 @@ export class Shell {
     return resolvePath(this.cwd, p);
   }
   readFile(p: string): string | undefined {
-    return this.state.files[this.resolve(p)];
+    const abs = this.resolve(p);
+    if (this.host !== this.homeHost) {
+      const remote = this.state.hosts[this.host]?.files?.[abs];
+      if (remote !== undefined) return remote;
+    }
+    return this.state.files[abs];
   }
   writeFile(p: string, content: string) {
     this.state.files[this.resolve(p)] = content;

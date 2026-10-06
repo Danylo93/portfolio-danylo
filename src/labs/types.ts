@@ -107,6 +107,8 @@ export type Host = {
   ip: string;
   services: Record<string, ServiceUnit>;
   packages: Record<string, string>;
+  /** Files that exist only on this host (e.g. written by Ansible); read after `ssh <host>`. */
+  files?: Record<string, string>;
 };
 
 // ---------------- Docker ----------------

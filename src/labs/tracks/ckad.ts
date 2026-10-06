@@ -96,7 +96,8 @@ spec:
         - containerPort: 5678
 `;
 
-export const CANARY_V2 = CANARY_V1.replace(/v1/g, "v2").replace("replicas: 3", "replicas: 1");
+// Only the name, label and response change: apiVersion apps/v1 must stay.
+export const CANARY_V2 = CANARY_V1.replace(/(web-|version: |text=)v1/g, "$1v2").replace("replicas: 3", "replicas: 1");
 
 const ORDERS_YAML = `apiVersion: apps/v1
 kind: Deployment

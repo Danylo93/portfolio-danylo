@@ -5,12 +5,15 @@ import * as cka from "./tracks/cka";
 import * as ckad from "./tracks/ckad";
 import * as docker from "./tracks/docker";
 import * as terraform from "./tracks/terraform";
+import * as ansible from "./tracks/ansible";
 import * as cicd from "./tracks/cicd";
 import * as devsecops from "./tracks/devsecops";
+import * as serverless from "./tracks/serverless";
+import { controlPlaneLab } from "./tracks/control-plane";
 
 export type { Lab, Lesson, Step, Track };
 
-const MODULES: { track: Track; labs: Lab[]; lessons?: Lesson[] }[] = [kubernetes, cka, ckad, docker, terraform, cicd, devsecops];
+const MODULES: { track: Track; labs: Lab[]; lessons?: Lesson[] }[] = [{ ...kubernetes, labs: [...kubernetes.labs, controlPlaneLab] }, cka, ckad, docker, terraform, ansible, cicd, devsecops, serverless];
 
 export const TRACKS: Track[] = MODULES.map((m) => m.track);
 export const LABS: Lab[] = MODULES.flatMap((m) => m.labs);

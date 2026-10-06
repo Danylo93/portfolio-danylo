@@ -1,6 +1,6 @@
 # Laboratório local no WSL2
 
-O site funciona com Node.js. Docker, Kubernetes e as demais CLIs servem para praticar **fora** do simulador, em um ambiente real. Instalar essas ferramentas não conecta automaticamente o terminal do navegador ao WSL.
+O modo padrão do site funciona com Node.js e usa um simulador. Para conectar os labs de Kubernetes Fundamentos ao cluster real do WSL, execute **`npm run dev:real`** e abra **http://localhost:8080/labs**. Consulte o [guia do modo real](REAL-LABS.md) para execução, validação e limpeza dos exercícios. Instalar as ferramentas sem iniciar esse modo mantém o terminal simulado.
 
 ## 1. Preparar o Windows
 
